@@ -34,7 +34,10 @@ RUN_DATE = os.getenv("RUN_DATE", "")
 
 # ---------------------------
 
-HONORIFICS_RE = r"(?:Mr|Ms|Mrs|Mdm|Madam|Assoc\s+Prof\s+Dr|Assoc\s+Prof|Professor|Dr|Miss)"
+HONORIFICS_RE = r"(?:Mr|Ms|Mrs|Mdm|Madam|Miss|Dr|Prof|Professor|Er\s+Dr|Assoc\s*Prof\.?\s*Dr\.?|Assoc\s*Prof\.?)"
+
+# Names that the Chair calls out (not substantive speeches)
+CHAIR_CALL_HONORIFICS_RE = r"(?:Mr|Ms|Mrs|Mdm|Madam|Miss|Dr|Assoc\s+Prof\s+Dr|Assoc\s+Prof|Professor|Prof|Er)"
 
 def word_count(text: str) -> int:
     return len(re.findall(r"\b\w+\b", text or ""))
@@ -92,6 +95,23 @@ def parse_day_month(text: str, year: int) -> Optional[date]:
             continue
     return None
 
+
+def extract_year(value: object, fallback: int) -> int:
+    """Extract a 4-digit year from year-like metadata fields.
+
+    Handles: 2024, '2024', '2017/2018', 'FY2017/2018', etc.
+    Returns fallback if no year is found.
+    """
+    if value is None:
+        return fallback
+    if isinstance(value, int):
+        return value
+    s = str(value).strip()
+    if not s:
+        return fallback
+    m = re.search(r"(19\d{2}|20\d{2})", s)
+    return int(m.group(1)) if m else fallback
+
 def ptba_overlaps_sitting(rec: dict, sitting_dt: date, default_year: int) -> bool:
     start = parse_day_month(rec.get("from"), default_year)
     end = parse_day_month(rec.get("to"), default_year)
@@ -146,6 +166,30 @@ def is_question_paper_item(speaker_raw: str, speech: str) -> bool:
     ) is not None
 
 
+# Detect procedural Chair call-outs like 'Mr Patrick Tay.' or 'Er Dr Lee Bee Wah.'
+def is_chair_call_to_member(text: str) -> bool:
+    """Detect Chair call-outs like 'Mr Patrick Tay.' or 'Er Dr Lee Bee Wah.'
+
+    These are procedural (Chair calling the next Member), not substantive speeches.
+    """
+    if not text:
+        return False
+    t = re.sub(r"\s+", " ", str(text).replace("\xa0", " ")).strip()
+    # Common formats end with a period; keep this conservative
+    if not t.endswith("."):
+        return False
+    # Very short and looks like a name with honorific
+    words = re.findall(r"\b\w+\b", t)
+    if len(words) > 7:
+        return False
+    if not re.match(rf"^({CHAIR_CALL_HONORIFICS_RE})\b", t, flags=re.I):
+        return False
+    # Avoid treating actual sentences as call-outs
+    if re.search(r"\b(thank|ask|welcome|move|agree|urge|request|clarif|supplementary|question)\b", t, flags=re.I):
+        return False
+    return True
+
+
 def extract_person_from_speaker_attendance(mp_name_raw: str) -> Optional[str]:
     """Extract person name from strings like: 'Mr SPEAKER (Mr Seah Kian Peng (Marine Parade)).'"""
     if not mp_name_raw:
@@ -175,12 +219,15 @@ def extract_person_from_name(raw: str) -> Optional[str]:
     if not raw:
         return None
     s = str(raw).strip()
-    # If something like 'Deputy Speaker (Mr Xie Yao Quan)' is present
-    m = re.search(r"\((Mr|Ms|Mrs|Mdm|Madam|Dr|Miss)\s+[^)]+\)", s)
+    # Match a person name inside parentheses, including multi-token honorifics like 'Assoc Prof Dr'
+    m = re.search(r"\((%s)\s+[^)]+\)" % HONORIFICS_RE, s, flags=re.I)
     if m:
         inner = m.group(0).strip("() ")
+        # Remove any trailing constituency parentheses within the captured text
         inner = re.sub(r"\s*\([^)]*\)\s*$", "", inner).strip(" .")
-        inner = re.sub(r"^(%s)\s+" % HONORIFICS_RE, "", inner, flags=re.I)
+        # Remove leading honorific(s)
+        inner = re.sub(r"^(?:(%s)\s+)+" % HONORIFICS_RE, "", inner, flags=re.I).strip()
+        inner = re.sub(r"\s+", " ", inner).strip(" .")
         return inner.strip() or None
 
     # If label is 'Mr Speaker' or 'Mr Deputy Speaker' etc, return None (resolved via attendance map)
@@ -193,6 +240,29 @@ def extract_person_from_name(raw: str) -> Optional[str]:
     s2 = re.sub(r"\([^)]*\)", " ", s2)  # remove any parentheses anywhere
     s2 = re.sub(r"\s+", " ", s2).strip(" .")
     return s2.strip() or None
+
+
+# ----------- Fallback extractor for parenthesized person names -----------
+def extract_last_parenthesized_text(s: str) -> Optional[str]:
+    """Return the last parenthesized chunk as a name-like string.
+
+    Useful when speaker_raw is a role title like:
+      'The Minister for ... (Assoc Prof Dr Yaacob Ibrahim)'
+    where the parentheses may not be captured by stricter patterns.
+    """
+    if not s:
+        return None
+    parts = re.findall(r"\(([^()]*)\)", str(s))
+    if not parts:
+        return None
+    last = parts[-1].strip().strip(".")
+    # Must look name-like (at least 2 alphabetic tokens)
+    if len(re.findall(r"[A-Za-z]+", last)) < 2:
+        return None
+    # Strip leading honorific tokens if present
+    last = re.sub(r"^(?:(%s)\s+)+" % HONORIFICS_RE, "", last, flags=re.I).strip()
+    last = re.sub(r"\s+", " ", last).strip(" .")
+    return last or None
 
 
 # ----------- Name cleaning and fuzzy matching helpers -----------
@@ -218,7 +288,7 @@ def clean_mp_name_from_attendance(raw: str) -> Optional[str]:
 
     # If the label contains a person's name in parentheses (e.g. role titles in speech list), extract it
     # Examples: 'The Minister for Foreign Affairs (Dr Vivian Balakrishnan)'
-    if re.search(r"\((Mr|Ms|Mrs|Mdm|Madam|Dr|Miss)\s+[^)]+\)", s):
+    if re.search(r"\((%s)\s+[^)]+\)" % HONORIFICS_RE, s, flags=re.I):
         person = extract_person_from_name(s)
         if person:
             return person
@@ -339,14 +409,92 @@ def chunk_records(records: List[dict], n: int):
         yield records[i:i+n]
 
 def upsert_all(sb: Client, df_att: pd.DataFrame, df_ptba: pd.DataFrame, df_speech: pd.DataFrame, sitting_iso: str, source_url: str):
-    for batch in chunk_records(df_att.to_dict("records"), 500):
-        sb.table("hansard_attendance").upsert(batch).execute()
-    for batch in chunk_records(df_ptba.to_dict("records"), 500):
-        sb.table("hansard_ptba").upsert(batch).execute()
-    for batch in chunk_records(df_speech.to_dict("records"), 300):
-        sb.table("hansard_speeches").upsert(batch).execute()
+    """Upsert parsed data into Supabase.
 
-    sb.table("hansard_sittings").upsert({"sitting_date": sitting_iso, "source_url": source_url}).execute()
+    Postgres raises `ON CONFLICT DO UPDATE command cannot affect row a second time`
+    when a *single upsert statement* contains multiple rows with the same conflict key.
+    This usually means our parsed payload contains duplicates for the table's PK.
+
+    We therefore:
+      1) normalize PK fields (strip whitespace; stable string conversion)
+      2) drop duplicates on the real PK
+      3) upsert in batches with explicit on_conflict targets
+    """
+
+    def _normalize_pk(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
+        if df is None or df.empty:
+            return df
+        out = df.copy()
+        for c in cols:
+            if c in out.columns:
+                out[c] = (
+                    out[c]
+                    .astype(str)
+                    .str.replace("\u00a0", " ", regex=False)
+                    .str.replace(r"\s+", " ", regex=True)
+                    .str.strip()
+                )
+        return out
+
+    # Attendance PK: (sitting_date, mp_name_raw)
+    df_att_u = df_att
+    if df_att_u is not None and not df_att_u.empty and {"sitting_date", "mp_name_raw"}.issubset(df_att_u.columns):
+        df_att_u = _normalize_pk(df_att_u, ["sitting_date", "mp_name_raw"])
+        if DEBUG:
+            dup_mask = df_att_u.duplicated(subset=["sitting_date", "mp_name_raw"], keep=False)
+            if dup_mask.any():
+                print("[DEBUG] Duplicate attendance PK rows BEFORE de-dup:")
+                print(df_att_u.loc[dup_mask, ["sitting_date", "mp_name_raw"]].value_counts().head(50))
+        df_att_u = df_att_u.drop_duplicates(subset=["sitting_date", "mp_name_raw"], keep="first")
+
+    # PTBA PK: (sitting_date, mp_name_raw, ptba_from, ptba_to)
+    df_ptba_u = df_ptba
+    if df_ptba_u is not None and not df_ptba_u.empty and {"sitting_date", "mp_name_raw", "ptba_from", "ptba_to"}.issubset(df_ptba_u.columns):
+        df_ptba_u = _normalize_pk(df_ptba_u, ["sitting_date", "mp_name_raw", "ptba_from", "ptba_to"])
+        if DEBUG:
+            dup_mask = df_ptba_u.duplicated(subset=["sitting_date", "mp_name_raw", "ptba_from", "ptba_to"], keep=False)
+            if dup_mask.any():
+                print("[DEBUG] Duplicate PTBA PK rows BEFORE de-dup:")
+                print(df_ptba_u.loc[dup_mask, ["sitting_date", "mp_name_raw", "ptba_from", "ptba_to"]].value_counts().head(50))
+        df_ptba_u = df_ptba_u.drop_duplicates(subset=["sitting_date", "mp_name_raw", "ptba_from", "ptba_to"], keep="first")
+
+    # Speeches PK: (sitting_date, row_num)
+    df_speech_u = df_speech
+    if df_speech_u is not None and not df_speech_u.empty and {"sitting_date", "row_num"}.issubset(df_speech_u.columns):
+        df_speech_u = _normalize_pk(df_speech_u, ["sitting_date"])
+        if DEBUG:
+            dup_mask = df_speech_u.duplicated(subset=["sitting_date", "row_num"], keep=False)
+            if dup_mask.any():
+                print("[DEBUG] Duplicate speeches PK rows BEFORE de-dup:")
+                print(df_speech_u.loc[dup_mask, ["sitting_date", "row_num"]].value_counts().head(50))
+        df_speech_u = df_speech_u.drop_duplicates(subset=["sitting_date", "row_num"], keep="first")
+
+    # Upsert batches with explicit conflict targets
+    try:
+        for batch in chunk_records(df_att_u.to_dict("records"), 500):
+            sb.table("hansard_attendance").upsert(batch, on_conflict="sitting_date,mp_name_raw").execute()
+    except Exception as e:
+        raise RuntimeError(f"Upsert failed for hansard_attendance ({sitting_iso}): {e}")
+
+    try:
+        for batch in chunk_records(df_ptba_u.to_dict("records"), 500):
+            sb.table("hansard_ptba").upsert(batch, on_conflict="sitting_date,mp_name_raw,ptba_from,ptba_to").execute()
+    except Exception as e:
+        raise RuntimeError(f"Upsert failed for hansard_ptba ({sitting_iso}): {e}")
+
+    try:
+        for batch in chunk_records(df_speech_u.to_dict("records"), 300):
+            sb.table("hansard_speeches").upsert(batch, on_conflict="sitting_date,row_num").execute()
+    except Exception as e:
+        raise RuntimeError(f"Upsert failed for hansard_speeches ({sitting_iso}): {e}")
+
+    try:
+        sb.table("hansard_sittings").upsert(
+            {"sitting_date": sitting_iso, "source_url": source_url},
+            on_conflict="sitting_date",
+        ).execute()
+    except Exception as e:
+        raise RuntimeError(f"Upsert failed for hansard_sittings ({sitting_iso}): {e}")
 
 
 
@@ -354,7 +502,7 @@ def parse_one_sitting(data: dict) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFr
     """Parse one Hansard JSON payload into attendance/PTBA/speech DataFrames."""
     sitting_dt = parse_sitting_date(data["metadata"]["sittingDate"])
     sitting_date = sitting_dt.strftime("%Y-%m-%d")
-    default_year = int(data["metadata"].get("ptbaFrom") or sitting_dt.year)
+    default_year = extract_year((data.get("metadata") or {}).get("ptbaFrom"), sitting_dt.year)
     parliament_no = infer_parliament_no_from_metadata(data)
     source_url = f"{BASE_URL}?sittingDate={data['metadata']['sittingDate']}"
 
@@ -449,22 +597,39 @@ def parse_one_sitting(data: dict) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFr
         df_ptba = df_ptba_all[df_ptba_all["dim_overlaps_sitting_date"] == 1][[
             "parliament_no","sitting_date","mp_name_raw","mp_name_cleaned","ptba_from","ptba_to"
         ]].reset_index(drop=True)
+
+        # De-dup on the actual table PK so CSVs (and any non-upsert insertion path) stay safe.
+        # PK: (sitting_date, mp_name_raw, ptba_from, ptba_to)
+        for c in ["sitting_date", "mp_name_raw", "ptba_from", "ptba_to"]:
+            df_ptba[c] = (
+                df_ptba[c]
+                .astype(str)
+                .str.replace("\u00a0", " ", regex=False)
+                .str.replace(r"\s+", " ", regex=True)
+                .str.strip()
+            )
+        before_n = len(df_ptba)
+        df_ptba = df_ptba.drop_duplicates(
+            subset=["sitting_date","mp_name_raw","ptba_from","ptba_to"],
+            keep="first",
+        ).reset_index(drop=True)
+        after_n = len(df_ptba)
+        if DEBUG and before_n != after_n:
+            print(f"[DEBUG] PTBA de-dup removed {before_n - after_n} rows (kept {after_n}).")
     else:
         df_ptba = pd.DataFrame(columns=["parliament_no","sitting_date","mp_name_raw","mp_name_cleaned","ptba_from","ptba_to"])
 
     # -------- Attendance --------
     att_rows: List[dict] = []
-    last_cleaned: Optional[str] = None
     for item in data.get("attendanceList", []):
         raw = (item.get("mpName") or "").strip()
+        if not raw:
+            # Skip blank/separator rows to avoid creating duplicate keys
+            continue
         u = raw.upper()
         present = 1 if item.get("attendance") else 0
 
         cleaned = clean_mp_name_from_attendance(raw)
-        if (raw == "") and (not cleaned):
-            cleaned = last_cleaned
-        if cleaned:
-            last_cleaned = cleaned
 
         att_rows.append({
             "sitting_date": sitting_date,
@@ -532,8 +697,16 @@ def parse_one_sitting(data: dict) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFr
 
             strong = tag.find("strong")
             if strong:
-                speaker_raw = strong.get_text(" ", strip=True)
                 full = tag.get_text(" ", strip=True)
+
+                # Speaker labels sometimes have split <strong> tags (e.g. '<strong>Mr </strong><strong>Ong Ye Kung</strong>:').
+                # Use the visible text up to the first ':' as the speaker label when available.
+                if ":" in full:
+                    speaker_raw = full.split(":", 1)[0].strip()
+                else:
+                    speaker_raw = strong.get_text(" ", strip=True)
+
+                speaker_raw = (speaker_raw or "").rstrip(":").strip()
 
                 if not speaker_raw:
                     append_continuation(full)
@@ -550,9 +723,9 @@ def parse_one_sitting(data: dict) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFr
                     else:
                         current_chair = inferred
 
-                msp = re.match(r"^\s*%s\s*:\s*:?\s*(.*)$" % re.escape(speaker_raw), full)
-                if msp:
-                    speech = msp.group(1).strip()
+                # Prefer splitting speech at first colon for robustness
+                if ":" in full:
+                    speech = full.split(":", 1)[1].strip()
                 else:
                     speech = re.sub(r"^\s*%s\s*" % re.escape(speaker_raw), "", full).lstrip(" :").strip()
 
@@ -564,16 +737,27 @@ def parse_one_sitting(data: dict) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFr
                     continue
 
                 role_as_speaker = chair_role(speaker_raw)
+
+                # Drop procedural Chair call-outs (e.g. 'Mr Patrick Tay.')
+                if role_as_speaker is not None and is_chair_call_to_member(speech):
+                    continue
+
                 if role_as_speaker is not None:
+                    # Chair speaking: map to whoever is currently in the Chair
                     mp_fuzzy = canonicalize_to_attendance(chair_display_name(current_chair))
                 else:
-                    q_clean = clean_mp_name_from_attendance(speaker_raw) or speaker_raw
+                    # Non-Chair: speaker_raw may be a role title with the person in parentheses.
+                    # Prefer extracting the actual person name for matching.
+                    extracted_person = extract_person_from_name(speaker_raw) or extract_last_parenthesized_text(speaker_raw)
+                    q_clean = extracted_person or clean_mp_name_from_attendance(speaker_raw) or speaker_raw
+
                     q_norm = norm_for_match(q_clean)
                     if q_norm and q_norm in attendance_norm_to_clean:
                         mp_fuzzy = canonicalize_to_attendance(attendance_norm_to_clean[q_norm])
                     else:
                         best, score = best_fuzzy_match(q_clean, attendance_choices_clean)
-                        mp_fuzzy = canonicalize_to_attendance(best) if score >= 0.80 else None
+                        # Slightly looser threshold to reduce false negatives for older Hansards
+                        mp_fuzzy = canonicalize_to_attendance(best) if score >= 0.75 else None
 
                 row_num += 1
                 speech_rows.append({
