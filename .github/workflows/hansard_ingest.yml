@@ -1,0 +1,27 @@
+name: Hansard ingest
+
+on:
+  schedule:
+    - cron: "30 3 * * *"   # daily 03:30 UTC
+  workflow_dispatch: {}
+
+concurrency:
+  group: hansard-ingest
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - run: python ingest.py
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          DEBUG: "false"
+          SAVE_JSON: "false"
+          MAX_DAYS_PER_RUN: "31"
