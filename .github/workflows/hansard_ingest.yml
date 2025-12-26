@@ -2,7 +2,8 @@ name: Hansard ingest
 
 on:
   schedule:
-    - cron: "30 3 * * *"   # daily 03:30 UTC
+    # Tuesday 00:00 GMT+8 == Monday 16:00 UTC (cron is UTC)
+    - cron: "0 16 * * 1"
   workflow_dispatch: {}
 
 concurrency:
@@ -24,4 +25,4 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           DEBUG: "false"
           SAVE_JSON: "false"
-          MAX_DAYS_PER_RUN: "31"
+          MAX_DAYS_PER_RUN: "0"
