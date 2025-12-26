@@ -9,32 +9,73 @@ from supabase import create_client, Client
 from dotenv import load_dotenv
 load_dotenv()
 
+# ---------------------------
+# Version stamp so you can confirm you are running the file you just edited.
+# Bump this when you make changes.
+SCRIPT_VERSION = "2025-12-25.1"
+
 # --------- CONFIG ----------
 BASE_URL = "https://sprs.parl.gov.sg/search/getHansardReport/"
 
-DEBUG = os.getenv("DEBUG", "false").lower() in {"1", "true", "yes"}
-SAVE_JSON = (os.getenv("SAVE_JSON", "false").lower() in {"1", "true", "yes"}) if DEBUG else False
+def env_bool(name: str, default: bool = False) -> bool:
+    v = os.getenv(name)
+    if v is None:
+        return default
+    return str(v).strip().lower() in {"1", "true", "yes", "y"}
+
+def env_str(name: str, default: str = "") -> str:
+    v = os.getenv(name)
+    return default if v is None else str(v)
+
+def env_int(name: str, default: int) -> int:
+    v = os.getenv(name)
+    try:
+        return int(v) if v is not None and str(v).strip() != "" else default
+    except ValueError:
+        return default
+
+DEBUG = env_bool("DEBUG", False)
+SAVE_JSON = env_bool("SAVE_JSON", False) if DEBUG else False
 
 # Optional override range (ISO: YYYY-MM-DD)
-START_DATE_ISO = os.getenv("START_DATE", "")
-END_DATE_ISO = os.getenv("END_DATE", "")
+START_DATE_ISO = env_str("START_DATE", "")
+END_DATE_ISO = env_str("END_DATE", "")
 
-# Safety cap per run (good for GitHub Actions)
-MAX_DAYS_PER_RUN = int(os.getenv("MAX_DAYS_PER_RUN", "31"))
+# Optional safety cap per run (good for GitHub Actions). Set to 0 to disable.
+MAX_DAYS_PER_RUN = env_int("MAX_DAYS_PER_RUN", 0)
 
 # Supabase
-SUPABASE_URL = os.getenv("SUPABASE_URL", "")
-SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+SUPABASE_URL = env_str("SUPABASE_URL", "")
+SUPABASE_SERVICE_ROLE_KEY = env_str("SUPABASE_SERVICE_ROLE_KEY", "")
 
 # If true, parse + write CSV/JSON locally but do NOT talk to Supabase
-SKIP_DB = os.getenv("SKIP_DB", "false").lower() in {"1", "true", "yes"}
+SKIP_DB = env_bool("SKIP_DB", False)
 
 # Optional single-run date override (accepts YYYY-MM-DD or DD-MM-YYYY)
-RUN_DATE = os.getenv("RUN_DATE", "")
+RUN_DATE = env_str("RUN_DATE", "")
 
 # ---------------------------
 
 HONORIFICS_RE = r"(?:Mr|Ms|Mrs|Mdm|Madam|Miss|Dr|Prof|Professor|Er\s+Dr|Assoc\s*Prof\.?\s*Dr\.?|Assoc\s*Prof\.?)"
+
+def normalize_ws(s: str) -> str:
+    """Normalize whitespace to reduce invisible-difference dupes (NBSP, multiple spaces)."""
+    if s is None:
+        return ""
+    x = str(s).replace("\u00a0", " ")
+    x = re.sub(r"\s+", " ", x)
+    return x.strip()
+
+
+def normalize_df_pk_cols(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
+    """Normalize PK columns in-place-safe copy (strip + collapse ws) for de-dup/upsert."""
+    if df is None or df.empty:
+        return df
+    out = df.copy()
+    for c in cols:
+        if c in out.columns:
+            out[c] = out[c].astype(str).map(normalize_ws)
+    return out
 
 # Names that the Chair calls out (not substantive speeches)
 CHAIR_CALL_HONORIFICS_RE = r"(?:Mr|Ms|Mrs|Mdm|Madam|Miss|Dr|Assoc\s+Prof\s+Dr|Assoc\s+Prof|Professor|Prof|Er)"
@@ -421,25 +462,10 @@ def upsert_all(sb: Client, df_att: pd.DataFrame, df_ptba: pd.DataFrame, df_speec
       3) upsert in batches with explicit on_conflict targets
     """
 
-    def _normalize_pk(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
-        if df is None or df.empty:
-            return df
-        out = df.copy()
-        for c in cols:
-            if c in out.columns:
-                out[c] = (
-                    out[c]
-                    .astype(str)
-                    .str.replace("\u00a0", " ", regex=False)
-                    .str.replace(r"\s+", " ", regex=True)
-                    .str.strip()
-                )
-        return out
-
     # Attendance PK: (sitting_date, mp_name_raw)
     df_att_u = df_att
     if df_att_u is not None and not df_att_u.empty and {"sitting_date", "mp_name_raw"}.issubset(df_att_u.columns):
-        df_att_u = _normalize_pk(df_att_u, ["sitting_date", "mp_name_raw"])
+        df_att_u = normalize_df_pk_cols(df_att_u, ["sitting_date", "mp_name_raw"])
         if DEBUG:
             dup_mask = df_att_u.duplicated(subset=["sitting_date", "mp_name_raw"], keep=False)
             if dup_mask.any():
@@ -450,7 +476,7 @@ def upsert_all(sb: Client, df_att: pd.DataFrame, df_ptba: pd.DataFrame, df_speec
     # PTBA PK: (sitting_date, mp_name_raw, ptba_from, ptba_to)
     df_ptba_u = df_ptba
     if df_ptba_u is not None and not df_ptba_u.empty and {"sitting_date", "mp_name_raw", "ptba_from", "ptba_to"}.issubset(df_ptba_u.columns):
-        df_ptba_u = _normalize_pk(df_ptba_u, ["sitting_date", "mp_name_raw", "ptba_from", "ptba_to"])
+        df_ptba_u = normalize_df_pk_cols(df_ptba_u, ["sitting_date", "mp_name_raw", "ptba_from", "ptba_to"])
         if DEBUG:
             dup_mask = df_ptba_u.duplicated(subset=["sitting_date", "mp_name_raw", "ptba_from", "ptba_to"], keep=False)
             if dup_mask.any():
@@ -461,7 +487,7 @@ def upsert_all(sb: Client, df_att: pd.DataFrame, df_ptba: pd.DataFrame, df_speec
     # Speeches PK: (sitting_date, row_num)
     df_speech_u = df_speech
     if df_speech_u is not None and not df_speech_u.empty and {"sitting_date", "row_num"}.issubset(df_speech_u.columns):
-        df_speech_u = _normalize_pk(df_speech_u, ["sitting_date"])
+        df_speech_u = normalize_df_pk_cols(df_speech_u, ["sitting_date"])
         if DEBUG:
             dup_mask = df_speech_u.duplicated(subset=["sitting_date", "row_num"], keep=False)
             if dup_mask.any():
@@ -600,14 +626,7 @@ def parse_one_sitting(data: dict) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFr
 
         # De-dup on the actual table PK so CSVs (and any non-upsert insertion path) stay safe.
         # PK: (sitting_date, mp_name_raw, ptba_from, ptba_to)
-        for c in ["sitting_date", "mp_name_raw", "ptba_from", "ptba_to"]:
-            df_ptba[c] = (
-                df_ptba[c]
-                .astype(str)
-                .str.replace("\u00a0", " ", regex=False)
-                .str.replace(r"\s+", " ", regex=True)
-                .str.strip()
-            )
+        df_ptba = normalize_df_pk_cols(df_ptba, ["sitting_date", "mp_name_raw", "ptba_from", "ptba_to"])
         before_n = len(df_ptba)
         df_ptba = df_ptba.drop_duplicates(
             subset=["sitting_date","mp_name_raw","ptba_from","ptba_to"],
@@ -810,11 +829,12 @@ def ingest():
             latest = get_latest_sitting(sb) if sb is not None else None
             start_dt = (latest + timedelta(days=1)) if latest else date(2020, 1, 1)
 
-        # cap per run (GitHub Actions friendly)
-        if (end_dt - start_dt).days + 1 > MAX_DAYS_PER_RUN:
-            end_dt = start_dt + timedelta(days=MAX_DAYS_PER_RUN - 1)
+        # Optional cap per run (GitHub Actions friendly). Set MAX_DAYS_PER_RUN=0 to disable.
+        if MAX_DAYS_PER_RUN and MAX_DAYS_PER_RUN > 0:
+            if (end_dt - start_dt).days + 1 > MAX_DAYS_PER_RUN:
+                end_dt = start_dt + timedelta(days=MAX_DAYS_PER_RUN - 1)
 
-    print(f"Ingest range: {start_dt.isoformat()} -> {end_dt.isoformat()} (RUN_DATE={RUN_DATE or 'auto'}, DEBUG={DEBUG}, SAVE_JSON={SAVE_JSON}, SKIP_DB={SKIP_DB})")
+    print(f"Ingest range: {start_dt.isoformat()} -> {end_dt.isoformat()} (ver={SCRIPT_VERSION}, RUN_DATE={RUN_DATE or 'auto'}, DEBUG={DEBUG}, SAVE_JSON={SAVE_JSON}, SKIP_DB={SKIP_DB})")
 
     d = start_dt
     while d <= end_dt:
