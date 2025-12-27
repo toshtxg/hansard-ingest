@@ -1,7 +1,9 @@
+<h2 style="margin: 8px 0;">Frequency of Attendance in Parliament Sitting</h2>
+
 <div>
-  <label>Start <input id="start" type="date" value="2024-01-01"></label>
-  <label>End <input id="end" type="date" value="2025-01-01"></label>
-  <label>Min present <input id="min" type="number" value="10"></label>
+  <label>Start Date <input id="start" type="date" value="2024-01-01"></label>
+  <label>End Date <input id="end" type="date" value="2025-01-01"></label>
+  <label>Minimum No. of Times Present <input id="min" type="number" value="10"></label>
   <button id="run">Run</button>
   <span id="status" style="margin-left:12px;"></span>
 </div>
@@ -29,6 +31,34 @@ async function fetchAttendance(payload) {
   return res.json();
 }
 
+const valueLabelPlugin = {
+  id: "valueLabelPlugin",
+  afterDatasetsDraw(chart, args, pluginOptions) {
+    const { ctx } = chart;
+    const meta = chart.getDatasetMeta(0);
+    const rows = pluginOptions.rows || [];
+
+    ctx.save();
+    ctx.font = "12px system-ui, -apple-system, Segoe UI, Roboto, Arial";
+    ctx.fillStyle = "#111";
+    ctx.textBaseline = "middle";
+
+    meta.data.forEach((bar, i) => {
+      const r = rows[i] || {};
+      const count = (r.count_present ?? "");
+      const pct = (r.percentage_present != null) ? (Number(r.percentage_present) * 100).toFixed(1) + "%" : "";
+      const label = `${count} (${pct})`;
+
+      // Place text slightly to the right of the bar end
+      const x = bar.x + 6;
+      const y = bar.y;
+      ctx.fillText(label, x, y);
+    });
+
+    ctx.restore();
+  }
+};
+
 let chart;
 async function run() {
   const statusEl = document.getElementById("status");
@@ -49,15 +79,42 @@ async function run() {
       return;
     }
 
+    // Sort by percentage ascending (so best attendance appears at the bottom)
+    rows.sort((a, b) => Number(a.percentage_present) - Number(b.percentage_present));
+
     const labels = rows.map(r => r.mp_name_cleaned);
     const values = rows.map(r => Number(r.percentage_present));
 
+    // Make the canvas taller when there are many MPs
+    const canvas = document.getElementById("chart");
+    canvas.height = Math.max(320, rows.length * 18);
+
     if (chart) chart.destroy();
-    chart = new Chart(document.getElementById("chart"), {
+    chart = new Chart(canvas, {
       type: "bar",
-      data: { labels, datasets: [{ label: "% present", data: values }] },
+      plugins: [valueLabelPlugin],
+      data: {
+        labels,
+        datasets: [{ label: "% present", data: values }]
+      },
       options: {
-        scales: { y: { ticks: { callback: v => `${Math.round(v * 100)}%` } } }
+        indexAxis: "y",
+        plugins: {
+          title: {
+            display: true,
+            text: "Frequency of Attendance in Parliament Sitting",
+            padding: { top: 8, bottom: 8 }
+          },
+          legend: { display: true },
+          valueLabelPlugin: { rows }
+        },
+        scales: {
+          x: {
+            min: 0,
+            max: 1,
+            ticks: { callback: v => `${(Number(v) * 100).toFixed(0)}%` }
+          }
+        }
       }
     });
 
