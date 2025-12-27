@@ -12,15 +12,18 @@
 const SUPABASE_URL = "https://jnvcylrcbhucuupsrobm.supabase.co/rest/v1/rpc/attendance_summary";
 const ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpudmN5bHJjYmh1Y3V1cHNyb2JtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjY1NTEyMTQsImV4cCI6MjA4MjEyNzIxNH0.syKhLRe2KeioaQneh_z6ZiASnUyFV-akyaRsL9M1S-0";
 
-async function fetchAttendance({start_date, end_date, min_present}) {
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/attendance_summary`, {
+const SUPABASE_BASE = "https://jnvcylrcbhucuupsrobm.supabase.co";
+const RPC_PATH = "/rest/v1/rpc/attendance_summary";
+
+async function fetchAttendance(payload) {
+  const res = await fetch(`${SUPABASE_BASE}${RPC_PATH}`, {
     method: "POST",
     headers: {
-      "apikey": ANON_KEY,
-      "Authorization": `Bearer ${ANON_KEY}`,
+      apikey: ANON_KEY,
+      Authorization: `Bearer ${ANON_KEY}`,
       "Content-Type": "application/json"
     },
-    body: JSON.stringify({ start_date, end_date, min_present })
+    body: JSON.stringify(payload)
   });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
