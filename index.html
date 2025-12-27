@@ -87,7 +87,7 @@ async function run() {
 
     // Make the canvas taller when there are many MPs
     const canvas = document.getElementById("chart");
-    canvas.height = Math.max(320, rows.length * 18);
+    canvas.height = Math.max(100, rows.length * 10);
 
     if (chart) chart.destroy();
     chart = new Chart(canvas, {
@@ -95,7 +95,14 @@ async function run() {
       plugins: [valueLabelPlugin],
       data: {
         labels,
-        datasets: [{ label: "% present", data: values }]
+        datasets: [{
+          label: "% present",
+          data: values,
+          maxBarThickness: 20,
+          barThickness: 20,
+          categoryPercentage: 0.2,
+          barPercentage: 0.9
+        }]
       },
       options: {
         indexAxis: "y",
@@ -106,13 +113,22 @@ async function run() {
             padding: { top: 8, bottom: 8 }
           },
           legend: { display: true },
+          layout: { padding: { right: 8 } },
           valueLabelPlugin: { rows }
         },
         scales: {
           x: {
+            display: false,
             min: 0,
-            max: 1,
-            ticks: { callback: v => `${(Number(v) * 100).toFixed(0)}%` }
+            max: 2,
+            grid: {
+              display: false
+            }
+          },
+          y: {
+            grid: {
+              display: false
+            }
           }
         }
       }
