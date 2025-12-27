@@ -1,0 +1,53 @@
+<div>
+  <label>Start <input id="start" type="date" value="2024-01-01"></label>
+  <label>End <input id="end" type="date" value="2025-01-01"></label>
+  <label>Min present <input id="min" type="number" value="10"></label>
+  <button id="run">Run</button>
+</div>
+
+<canvas id="chart" height="120"></canvas>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+const SUPABASE_URL = "https://jnvcylrcbhucuupsrobm.supabase.co/rest/v1/rpc/attendance_summary";
+const ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpudmN5bHJjYmh1Y3V1cHNyb2JtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjY1NTEyMTQsImV4cCI6MjA4MjEyNzIxNH0.syKhLRe2KeioaQneh_z6ZiASnUyFV-akyaRsL9M1S-0";
+
+async function fetchAttendance({start_date, end_date, min_present}) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/attendance_summary`, {
+    method: "POST",
+    headers: {
+      "apikey": ANON_KEY,
+      "Authorization": `Bearer ${ANON_KEY}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ start_date, end_date, min_present })
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+let chart;
+async function run() {
+  const payload = {
+    start_date: document.querySelector("#start").value,
+    end_date: document.querySelector("#end").value,
+    min_present: Number(document.querySelector("#min").value)
+  };
+  const rows = await fetchAttendance(payload);
+
+  const labels = rows.map(r => r.mp_name_cleaned);
+  const values = rows.map(r => Number(r.percentage_present));
+
+  if (chart) chart.destroy();
+  chart = new Chart(document.getElementById("chart"), {
+    type: "bar",
+    data: { labels, datasets: [{ label: "% present", data: values }] },
+    options: {
+      scales: { y: { ticks: { callback: v => `${Math.round(v*100)}%` } } }
+    }
+  });
+}
+
+document.querySelector("#run").addEventListener("click", run);
+run();
+</script>
