@@ -3,13 +3,13 @@
   <label>End <input id="end" type="date" value="2025-01-01"></label>
   <label>Min present <input id="min" type="number" value="10"></label>
   <button id="run">Run</button>
+  <span id="status" style="margin-left:12px;"></span>
 </div>
 
 <canvas id="chart" height="120"></canvas>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script>
-const SUPABASE_URL = "https://jnvcylrcbhucuupsrobm.supabase.co/rest/v1/rpc/attendance_summary";
 const ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpudmN5bHJjYmh1Y3V1cHNyb2JtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjY1NTEyMTQsImV4cCI6MjA4MjEyNzIxNH0.syKhLRe2KeioaQneh_z6ZiASnUyFV-akyaRsL9M1S-0";
 
 const SUPABASE_BASE = "https://jnvcylrcbhucuupsrobm.supabase.co";
@@ -31,24 +31,43 @@ async function fetchAttendance(payload) {
 
 let chart;
 async function run() {
-  const payload = {
-    start_date: document.querySelector("#start").value,
-    end_date: document.querySelector("#end").value,
-    min_present: Number(document.querySelector("#min").value)
-  };
-  const rows = await fetchAttendance(payload);
+  const statusEl = document.getElementById("status");
+  try {
+    statusEl.textContent = "Loading…";
 
-  const labels = rows.map(r => r.mp_name_cleaned);
-  const values = rows.map(r => Number(r.percentage_present));
+    const payload = {
+      start_date: document.querySelector("#start").value,
+      end_date: document.querySelector("#end").value,
+      min_present: Number(document.querySelector("#min").value)
+    };
 
-  if (chart) chart.destroy();
-  chart = new Chart(document.getElementById("chart"), {
-    type: "bar",
-    data: { labels, datasets: [{ label: "% present", data: values }] },
-    options: {
-      scales: { y: { ticks: { callback: v => `${Math.round(v*100)}%` } } }
+    const rows = await fetchAttendance(payload);
+
+    if (!Array.isArray(rows) || rows.length === 0) {
+      if (chart) chart.destroy();
+      statusEl.textContent = "No rows returned.";
+      return;
     }
-  });
+
+    const labels = rows.map(r => r.mp_name_cleaned);
+    const values = rows.map(r => Number(r.percentage_present));
+
+    if (chart) chart.destroy();
+    chart = new Chart(document.getElementById("chart"), {
+      type: "bar",
+      data: { labels, datasets: [{ label: "% present", data: values }] },
+      options: {
+        scales: { y: { ticks: { callback: v => `${Math.round(v * 100)}%` } } }
+      }
+    });
+
+    statusEl.textContent = `Loaded ${rows.length} MPs.`;
+  } catch (e) {
+    console.error(e);
+    const msg = (e && e.message) ? e.message : String(e);
+    statusEl.textContent = "Error — see console.";
+    alert(msg);
+  }
 }
 
 document.querySelector("#run").addEventListener("click", run);
