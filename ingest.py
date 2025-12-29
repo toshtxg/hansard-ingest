@@ -3,8 +3,15 @@ import requests
 from datetime import datetime, date, timedelta
 import pandas as pd
 from bs4 import BeautifulSoup
-from typing import Optional, List, Tuple, Dict
-from supabase import create_client, Client
+from typing import Optional, List, Tuple, Dict, Any
+
+# Supabase is optional for local parsing runs (e.g., SKIP_DB=true).
+# We import it lazily so the script can run even if the package isn't installed.
+try:
+    from supabase import create_client, Client  # type: ignore
+except ModuleNotFoundError:
+    create_client = None  # type: ignore
+    Client = Any  # type: ignore
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -12,7 +19,7 @@ load_dotenv()
 # ---------------------------
 # Version stamp so you can confirm you are running the file you just edited.
 # Bump this when you make changes.
-SCRIPT_VERSION = "2025-12-25.1"
+SCRIPT_VERSION = "2025-12-29.1"
 
 # --------- CONFIG ----------
 BASE_URL = "https://sprs.parl.gov.sg/search/getHansardReport/"
@@ -53,6 +60,14 @@ SKIP_DB = env_bool("SKIP_DB", False)
 
 # Optional single-run date override (accepts YYYY-MM-DD or DD-MM-YYYY)
 RUN_DATE = env_str("RUN_DATE", "")
+
+# ---- AI summary (optional) ----
+AI_ENABLED = env_bool("AI_ENABLED", False)
+AI_PROVIDER = env_str("AI_PROVIDER", "openai").strip().lower()
+OPENAI_API_KEY = env_str("OPENAI_API_KEY", "")
+OPENAI_MODEL = env_str("OPENAI_MODEL", "gpt-4o-mini")
+AI_MAX_CHARS = env_int("AI_MAX_CHARS", 12000)
+AI_DRY_RUN = env_bool("AI_DRY_RUN", False)  # if true, generate summary but don't write to DB
 
 # ---------------------------
 
@@ -400,6 +415,109 @@ def maybe_write_json(data: dict, path: str):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
+# ---- AI summary helpers ----
+def strip_html_to_text(html: str) -> str:
+    if not html:
+        return ""
+    soup = BeautifulSoup(html, "html.parser")
+    return soup.get_text(" ", strip=True)
+
+
+def build_ai_summary_prompt(sitting_date_iso: str, speech_df: pd.DataFrame) -> str:
+    """Build a prompt from raw speeches. Keep it deterministic and compact."""
+    if speech_df is None or speech_df.empty:
+        return (
+            f"Sitting date: {sitting_date_iso}.\n"
+            "No speech content was parsed for this sitting.\n\n"
+            "Write a 3-sentence summary:\n"
+            "1) What topics were talked about\n"
+            "2) How it impacts Singapore\n"
+            "3) Why we should care\n"
+        )
+
+    # Keep only substantive fields; concatenate in order
+    parts: List[str] = []
+    for _, r in speech_df.sort_values(["row_num"]).iterrows():
+        speaker = str(r.get("mp_name_fuzzy_matched") or r.get("mp_name_raw") or "").strip()
+        speech = str(r.get("speech_details") or "").strip()
+        if not speech:
+            continue
+        # Keep it readable but compact
+        parts.append(f"{speaker}: {speech}")
+
+    raw_text = "\n".join(parts)
+
+    # Hard cap to avoid runaway prompt sizes
+    if AI_MAX_CHARS and AI_MAX_CHARS > 0 and len(raw_text) > AI_MAX_CHARS:
+        raw_text = raw_text[:AI_MAX_CHARS] + "\n...[truncated]"
+
+    return (
+        "You are summarizing a Singapore Parliament sitting transcript.\n"
+        "Write exactly 3 sentences, no bullet points.\n"
+        "Sentence 1: what topics were discussed.\n"
+        "Sentence 2: how it impacts Singapore.\n"
+        "Sentence 3: why the public should care.\n"
+        "Keep it neutral and factual; do not invent details.\n\n"
+        f"Sitting date: {sitting_date_iso}\n\n"
+        "Transcript (may be truncated):\n"
+        f"{raw_text}"
+    )
+
+
+def openai_summarize(prompt: str) -> str:
+    if not OPENAI_API_KEY:
+        raise RuntimeError("AI_ENABLED=true but OPENAI_API_KEY is missing")
+
+    # Use Chat Completions-compatible request via HTTP (no extra deps)
+    url = "https://api.openai.com/v1/chat/completions"
+    payload = {
+        "model": OPENAI_MODEL,
+        "messages": [
+            {"role": "system", "content": "You are a careful assistant."},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.2,
+    }
+
+    r = requests.post(
+        url,
+        headers={
+            "Authorization": f"Bearer {OPENAI_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        json=payload,
+        timeout=60,
+    )
+
+    if not r.ok:
+        raise RuntimeError(f"OpenAI API error {r.status_code}: {r.text}")
+
+    data = r.json()
+    try:
+        return data["choices"][0]["message"]["content"].strip()
+    except Exception:
+        raise RuntimeError(f"Unexpected OpenAI response: {data}")
+
+
+def generate_ai_summary(sitting_date_iso: str, speech_df: pd.DataFrame) -> Optional[dict]:
+    """Return a row dict suitable for upsert into hansard_ai_summaries."""
+    if not AI_ENABLED:
+        return None
+    if AI_PROVIDER != "openai":
+        raise RuntimeError(f"Unsupported AI_PROVIDER: {AI_PROVIDER}")
+
+    prompt = build_ai_summary_prompt(sitting_date_iso, speech_df)
+    summary = openai_summarize(prompt)
+
+    return {
+        "sitting_date": sitting_date_iso,
+        "provider": AI_PROVIDER,
+        "model": OPENAI_MODEL,
+        "summary_3_sentences": summary,
+        "updated_at": datetime.utcnow().isoformat(),
+    }
+
+
 # -------------- Parliament No inference helper --------------
 def infer_parliament_no_from_metadata(data: dict) -> Optional[int]:
     """Infer Singapore Parliament number from Hansard JSON metadata.
@@ -437,6 +555,10 @@ def require_env():
 
 def supabase_client() -> Client:
     require_env()
+    if create_client is None:
+        raise RuntimeError(
+            "Python package 'supabase' is not installed. Install it with: pip install supabase"
+        )
     return create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 
 def get_latest_sitting(sb: Client) -> Optional[date]:
@@ -523,6 +645,19 @@ def upsert_all(sb: Client, df_att: pd.DataFrame, df_ptba: pd.DataFrame, df_speec
         raise RuntimeError(f"Upsert failed for hansard_sittings ({sitting_iso}): {e}")
 
 
+    # Optional AI summary table (safe if AI not enabled, and safe if table doesn't exist)
+    if AI_ENABLED:
+        try:
+            # NOTE: assumes a table named hansard_ai_summaries exists with PK on sitting_date
+            # Columns expected: sitting_date, provider, model, summary_3_sentences, updated_at
+            # If your schema differs, adjust here.
+            summary_row = globals().get("_AI_SUMMARY_ROW")
+            if summary_row and summary_row.get("sitting_date") == sitting_iso:
+                sb.table("hansard_ai_summaries").upsert(summary_row, on_conflict="sitting_date").execute()
+        except Exception as e:
+            # Don't fail ingestion if AI summary insert fails
+            if DEBUG:
+                print(f"[DEBUG] AI summary upsert skipped/failed for {sitting_iso}: {e}")
 
 def parse_one_sitting(data: dict) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, str, Optional[int], date]:
     """Parse one Hansard JSON payload into attendance/PTBA/speech DataFrames."""
@@ -857,6 +992,20 @@ def ingest():
             d += timedelta(days=1)
             continue
 
+        # ---- AI summary (optional) ----
+        ai_row = None
+        if AI_ENABLED:
+            try:
+                ai_row = generate_ai_summary(d.isoformat(), df_speech)
+                # Stash it so upsert_all can insert it without changing its signature
+                globals()["_AI_SUMMARY_ROW"] = ai_row
+                if DEBUG:
+                    print(f"[DEBUG] AI summary generated for {ddmmyyyy}: {ai_row.get('summary_3_sentences','')[:120]}...")
+                if AI_DRY_RUN:
+                    print(f"[AI_DRY_RUN] {d.isoformat()} summary:\n{ai_row.get('summary_3_sentences','')}")
+            except Exception as e:
+                print(f"AI summary failed for {ddmmyyyy}: {e}")
+
         if DEBUG:
             maybe_write_csv(df_att, f"attendance_list_{ddmmyyyy}.csv")
             maybe_write_csv(df_ptba, f"ptba_list_{ddmmyyyy}.csv")
@@ -871,6 +1020,9 @@ def ingest():
             print(f"SKIP_DB=true; parsed {ddmmyyyy}: att={len(df_att)} ptba={len(df_ptba)} speech={len(df_speech)}")
         else:
             try:
+                if AI_DRY_RUN:
+                    # Prevent AI summary DB writes during dry run
+                    globals()["_AI_SUMMARY_ROW"] = None
                 upsert_all(sb, df_att, df_ptba, df_speech, d.isoformat(), source_url)
                 print(f"Inserted {ddmmyyyy}: att={len(df_att)} ptba={len(df_ptba)} speech={len(df_speech)}")
             except Exception as e:
