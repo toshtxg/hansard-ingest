@@ -457,7 +457,7 @@ def build_ai_summary_prompt(sitting_date_iso: str, speech_df: pd.DataFrame) -> s
         "Sentence 1: what topics were discussed.\n"
         "Sentence 2: how it impacts Singapore.\n"
         "Sentence 3: why the public should care.\n"
-        "Keep it neutral and factual; do not invent details.\n\n"
+        "Keep it neutral and factual; do not invent details. No need to mention which date it is for.\n\n"
         f"Sitting date: {sitting_date_iso}\n\n"
         "Transcript (may be truncated):\n"
         f"{raw_text}"
