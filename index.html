@@ -1,148 +1,411 @@
-<h2 style="margin: 8px 0;">Frequency of Attendance in Parliament Sitting</h2>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Singapore Hansard — Sitting Dashboard</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 16px; color: #111; }
+    h1 { margin: 0 0 12px; font-size: 22px; }
+    .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
+    .card { border: 1px solid #e6e6e6; border-radius: 10px; padding: 12px; background: #fff; }
+    .card h3 { margin: 0 0 10px; font-size: 16px; }
+    label { font-size: 12px; color: #333; display: inline-flex; flex-direction: column; gap: 6px; }
+    select, input, button { font-size: 12px; padding: 6px 8px; }
+    select[multiple] { min-width: 320px; height: 160px; }
+    button { cursor: pointer; }
+    .muted { color: #666; font-size: 12px; }
+    .status { margin-left: 10px; font-size: 12px; color: #333; }
+    .grid { display: grid; grid-template-columns: 1fr; gap: 12px; }
+    @media (min-width: 900px) { .grid { grid-template-columns: 1fr 1fr; } }
+    .full { grid-column: 1 / -1; }
+    .kpi { font-size: 28px; font-weight: 700; line-height: 1.1; }
+    .kpi-sub { font-size: 12px; color: #444; }
+    table { border-collapse: collapse; width: 100%; font-size: 13px; }
+    th, td { padding: 8px; border-bottom: 1px solid #eee; text-align: left; vertical-align: top; }
+    th { font-weight: 600; color: #333; }
+    .note { font-size: 12px; color: #666; margin-top: 6px; }
+    .err { color: #b00020; }
+    .chart-wrap { height: 560px; }
+    @media (max-width: 900px) { .chart-wrap { height: 520px; } }
+    canvas.chart-canvas { width: 100% !important; height: 100% !important; display: block; }
+  </style>
+</head>
+<body>
+  <h1>Singapore Hansard — Sitting Dashboard</h1>
 
-<div>
-  <label>Start Date <input id="start" type="date" value="2024-01-01"></label>
-  <label>End Date <input id="end" type="date" value="2025-01-01"></label>
-  <label>Minimum No. of Times Present <input id="min" type="number" value="10"></label>
-  <button id="run">Run</button>
-  <span id="status" style="margin-left:12px;"></span>
-</div>
+  <div class="card">
+    <div class="row">
+      <label>
+        Parliament Sitting Date(s)
+        <select id="sittingDates" multiple></select>
+      </label>
 
-<canvas id="chart" height="120"></canvas>
+      <div class="row" style="gap:10px; align-items:flex-end;">
+        <label>
+          Top N
+          <input id="topN" type="number" min="1" max="50" value="15" style="width: 90px;" />
+        </label>
+        <div>
+          <button id="btnRun">Run</button>
+          <span id="status" class="status"></span>
+          <div class="note">Tip: Cmd/Ctrl+Click to multi-select. Latest sitting is selected by default.</div>
+        </div>
+      </div>
+    </div>
 
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-<script>
-const ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpudmN5bHJjYmh1Y3V1cHNyb2JtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjY1NTEyMTQsImV4cCI6MjA4MjEyNzIxNH0.syKhLRe2KeioaQneh_z6ZiASnUyFV-akyaRsL9M1S-0";
+    <div id="sittingsFallback" class="muted" style="display:none; margin-top:10px;">
+      <div class="err" style="margin-bottom:6px;">Could not load sitting dates automatically.</div>
+      <div>
+        You have 2 options:
+        <ul style="margin: 6px 0 0 18px; padding: 0;">
+          <li><b>Recommended</b>: create an RPC called <code>list_sittings(limit_n int)</code> (or a non-overloaded <code>list_sittings</code>) that returns <code>[{ sitting_date: 'YYYY-MM-DD' }, ...]</code> ordered newest-first.</li>
+          <li>Temporary: paste dates below (YYYY-MM-DD, one per line), then click Run.</li>
+        </ul>
+      </div>
+      <div style="margin-top:8px;">
+        <textarea id="manualDates" rows="4" style="width: 100%; max-width: 520px; font-size: 12px; padding: 8px;" placeholder="2024-07-02\n2024-08-07"></textarea>
+      </div>
+    </div>
+  </div>
 
-const SUPABASE_BASE = "https://jnvcylrcbhucuupsrobm.supabase.co";
-const RPC_PATH = "/rest/v1/rpc/attendance_summary";
+  <div class="grid" style="margin-top: 12px;">
+    <div class="card">
+      <h3 id="titleWords">Top 15 — Most words</h3>
+      <div class="chart-wrap">
+        <canvas id="chartWords" class="chart-canvas"></canvas>
+      </div>
+      <div class="note">Source: RPC <code>top10_words</code>, filtered by selected sitting date(s). (UI shows Top N from returned rows)</div>
+    </div>
 
-async function fetchAttendance(payload) {
-  const res = await fetch(`${SUPABASE_BASE}${RPC_PATH}`, {
-    method: "POST",
-    headers: {
+    <div class="card">
+      <h3 id="titleTimes">Top 15 — Most times spoken</h3>
+      <div class="chart-wrap">
+        <canvas id="chartTimes" class="chart-canvas"></canvas>
+      </div>
+      <div class="note">Source: RPC <code>top10_times_spoken</code>, filtered by selected sitting date(s). (UI shows Top N from returned rows)</div>
+    </div>
+
+    <div class="card full">
+      <h3>WP share — % of turns</h3>
+      <div class="row" style="align-items: center;">
+        <div style="min-width: 240px;">
+          <div id="wpPct" class="kpi">—</div>
+          <div id="wpDetail" class="kpi-sub">—</div>
+        </div>
+        <div class="muted">Source: RPC <code>wp_share</code>. (Expected fields: <code>wp_turns</code>, <code>total_turns</code>. Parameter: <code>sitting_dates</code>.)</div>
+      </div>
+    </div>
+
+    <div class="card full">
+      <h3>What was discussed? (AI summary)</h3>
+      <div class="muted">Placeholder — you’ll wire this to your <code>get_ai_summary</code> later.</div>
+      <table style="margin-top:10px;">
+        <thead>
+          <tr><th style="width: 160px;">Sitting date</th><th>Summary</th></tr>
+        </thead>
+        <tbody id="aiTableBody">
+          <tr><td class="muted">—</td><td class="muted">—</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script>
+  // ======= CONFIG =======
+  // NOTE: ANON_KEY is OK to be public *only if* your Supabase policies/RPCs ensure you expose aggregated/safe data.
+  const ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpudmN5bHJjYmh1Y3V1cHNyb2JtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjY1NTEyMTQsImV4cCI6MjA4MjEyNzIxNH0.syKhLRe2KeioaQneh_z6ZiASnUyFV-akyaRsL9M1S-0";
+  const SUPABASE_BASE = "https://jnvcylrcbhucuupsrobm.supabase.co";
+
+  // Your existing RPCs:
+  const RPC_TOP_WORDS = "/rest/v1/rpc/top10_words";
+  const RPC_TOP_TIMES = "/rest/v1/rpc/top10_times_spoken";
+  const RPC_WP_SHARE = "/rest/v1/rpc/wp_share";
+
+  // Optional (recommended): create this RPC to populate the date filter
+  const RPC_LIST_SITTINGS = "/rest/v1/rpc/list_sittings";
+
+  function headers(withJson = true) {
+    const h = {
       apikey: ANON_KEY,
       Authorization: `Bearer ${ANON_KEY}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify(payload)
-  });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
-
-const valueLabelPlugin = {
-  id: "valueLabelPlugin",
-  afterDatasetsDraw(chart, args, pluginOptions) {
-    const { ctx } = chart;
-    const meta = chart.getDatasetMeta(0);
-    const rows = pluginOptions.rows || [];
-
-    ctx.save();
-    ctx.font = "12px system-ui, -apple-system, Segoe UI, Roboto, Arial";
-    ctx.fillStyle = "#111";
-    ctx.textBaseline = "middle";
-
-    meta.data.forEach((bar, i) => {
-      const r = rows[i] || {};
-      const count = (r.count_present ?? "");
-      const pct = (r.percentage_present != null) ? (Number(r.percentage_present) * 100).toFixed(1) + "%" : "";
-      const label = `${count} (${pct})`;
-
-      // Place text slightly to the right of the bar end
-      const x = bar.x + 6;
-      const y = bar.y;
-      ctx.fillText(label, x, y);
-    });
-
-    ctx.restore();
-  }
-};
-
-let chart;
-async function run() {
-  const statusEl = document.getElementById("status");
-  try {
-    statusEl.textContent = "Loading…";
-
-    const payload = {
-      start_date: document.querySelector("#start").value,
-      end_date: document.querySelector("#end").value,
-      min_present: Number(document.querySelector("#min").value)
     };
+    if (withJson) h["Content-Type"] = "application/json";
+    return h;
+  }
 
-    const rows = await fetchAttendance(payload);
+  async function rpc(path, payload) {
+    const hasBody = payload !== undefined && payload !== null;
+    const res = await fetch(`${SUPABASE_BASE}${path}`, {
+      method: "POST",
+      headers: headers(hasBody),
+      body: hasBody ? JSON.stringify(payload) : undefined
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  }
 
-    if (!Array.isArray(rows) || rows.length === 0) {
-      if (chart) chart.destroy();
-      statusEl.textContent = "No rows returned.";
-      return;
+  function setStatus(msg) {
+    document.getElementById("status").textContent = msg || "";
+  }
+
+  function getSelectedDates() {
+    const sel = document.getElementById("sittingDates");
+    const picked = Array.from(sel.selectedOptions).map(o => o.value).filter(Boolean);
+
+    // Fallback: manual textarea
+    const fallbackShown = document.getElementById("sittingsFallback").style.display !== "none";
+    if (picked.length === 0 && fallbackShown) {
+      const raw = document.getElementById("manualDates").value || "";
+      return raw.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+    }
+    return picked;
+  }
+
+  function aggregateTopN(rows, valueField, labelField, N = 15) {
+    const m = new Map();
+    for (const r of rows) {
+      const k = (r?.[labelField] ?? "").toString().trim();
+      if (!k) continue;
+      const v = Number(r?.[valueField] ?? 0);
+      m.set(k, (m.get(k) || 0) + (Number.isFinite(v) ? v : 0));
+    }
+    const combined = Array.from(m.entries()).map(([k, v]) => ({ name: k, value: v }));
+    combined.sort((a, b) => b.value - a.value); // DESC
+    return combined.slice(0, N);
+  }
+
+  const valueLabelPlugin = {
+    id: "valueLabelPlugin",
+    afterDatasetsDraw(chart, args, pluginOptions) {
+      const { ctx } = chart;
+      const meta = chart.getDatasetMeta(0);
+      const values = pluginOptions.values || [];
+      ctx.save();
+      ctx.font = "13px system-ui, -apple-system, Segoe UI, Roboto, Arial";
+      ctx.fillStyle = "#111";
+      ctx.textBaseline = "middle";
+
+      meta.data.forEach((bar, i) => {
+        const v = values[i];
+        const label = (v != null) ? String(v) : "";
+        const x = bar.x + 6;
+        const y = bar.y;
+        ctx.fillText(label, x, y);
+      });
+      ctx.restore();
+    }
+  };
+
+  function makeHBar(canvasId, labels, data, valueLabels) {
+    const canvas = document.getElementById(canvasId);
+
+    // Ensure container has a reasonable height; scale slightly with number of rows.
+    const wrap = canvas.closest('.chart-wrap');
+    if (wrap) {
+      const h = Math.min(920, Math.max(320, labels.length * 36 + 140));
+      wrap.style.height = h + 'px';
     }
 
-    // Sort by percentage ascending (so best attendance appears at the bottom)
-    rows.sort((a, b) => Number(a.percentage_present) - Number(b.percentage_present));
-
-    const labels = rows.map(r => r.mp_name_cleaned);
-    const values = rows.map(r => Number(r.percentage_present));
-
-    // Make the canvas taller when there are many MPs
-    const canvas = document.getElementById("chart");
-    canvas.height = Math.max(100, rows.length * 10);
-
-    if (chart) chart.destroy();
-    chart = new Chart(canvas, {
+    return new Chart(canvas, {
       type: "bar",
       plugins: [valueLabelPlugin],
       data: {
         labels,
         datasets: [{
-          label: "% present",
-          data: values,
-          maxBarThickness: 20,
-          barThickness: 20,
-          categoryPercentage: 0.2,
-          barPercentage: 0.9
+          label: "value",
+          data,
+          barThickness: 22,
+          maxBarThickness: 22,
+          categoryPercentage: 0.9,
+          barPercentage: 0.95
         }]
       },
       options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: false,
         indexAxis: "y",
         plugins: {
-          title: {
-            display: true,
-            text: "Frequency of Attendance in Parliament Sitting",
-            padding: { top: 8, bottom: 8 }
-          },
-          legend: { display: true },
-          layout: { padding: { right: 8 } },
-          valueLabelPlugin: { rows }
+          legend: { display: false },
+          valueLabelPlugin: { values: valueLabels }
         },
+        layout: { padding: { left: 18, right: 120, top: 6, bottom: 6 } },
         scales: {
           x: {
             display: false,
-            min: 0,
-            max: 2,
-            grid: {
-              display: false
-            }
+            grid: { display: false }
           },
           y: {
-            grid: {
-              display: false
+            grid: { display: false },
+            ticks: {
+              autoSkip: false,
+              font: { size: 13 }
             }
           }
         }
       }
     });
-
-    statusEl.textContent = `Loaded ${rows.length} MPs.`;
-  } catch (e) {
-    console.error(e);
-    const msg = (e && e.message) ? e.message : String(e);
-    statusEl.textContent = "Error — see console.";
-    alert(msg);
   }
-}
 
-document.querySelector("#run").addEventListener("click", run);
-run();
-</script>
+  let chartWords, chartTimes;
+  let hasAutoRun = false;
+
+  async function loadSittings() {
+    const sel = document.getElementById("sittingDates");
+    sel.innerHTML = "";
+
+    try {
+      // Your DB has both list_sittings() and list_sittings(limit_n int).
+      // PostgREST can error on overloaded functions unless we pass parameters.
+      // Call the explicit signature by sending a JSON body with limit_n.
+      const rows = await rpc(RPC_LIST_SITTINGS, { limit_n: 1000 });
+      const rawRows = (Array.isArray(rows) ? rows : []);
+      const dates = rawRows
+        .map(r => r?.sitting_date ?? r?.date ?? r?.sitting_dates ?? r?.sitting)
+        .flat()
+        .filter(Boolean)
+        .map(String);
+
+      if (dates.length === 0) throw new Error("list_sittings returned 0 rows (try increasing limit_n)");
+
+      for (const d of dates) {
+        const opt = document.createElement("option");
+        opt.value = d;
+        opt.textContent = d;
+        sel.appendChild(opt);
+      }
+
+      // Select latest by default (first option)
+      sel.options[0].selected = true;
+      document.getElementById("sittingsFallback").style.display = "none";
+
+      // Auto-run once on initial page load using the latest sitting date.
+      // (User can still change selection(s) and click Run to refresh.)
+      if (!hasAutoRun) {
+        hasAutoRun = true;
+        setStatus(`Loaded ${dates.length} sitting dates. Loading charts…`);
+        // Defer run() to ensure the DOM is fully ready
+        setTimeout(() => run(), 0);
+      } else {
+        setStatus(`Loaded ${dates.length} sitting dates.`);
+      }
+
+    } catch (e) {
+      console.warn("Failed to load sittings:", e);
+      const errBox = document.querySelector('#sittingsFallback .err');
+      if (errBox) {
+        const msg = (e && e.message) ? e.message : String(e);
+        errBox.textContent = `Could not load sitting dates automatically. ${msg}`;
+      }
+      document.getElementById("sittingsFallback").style.display = "block";
+      setStatus("Could not auto-load sittings — use manual dates below.");
+    }
+  }
+
+  async function run() {
+    try {
+      setStatus("Loading…");
+
+      const dates = getSelectedDates();
+      if (!dates.length) {
+        setStatus("Pick at least 1 sitting date.");
+        return;
+      }
+
+      const Nraw = Number(document.getElementById("topN")?.value);
+      const TOP_N = Number.isFinite(Nraw) ? Math.max(1, Math.min(50, Math.floor(Nraw))) : 15;
+      document.getElementById("topN").value = String(TOP_N);
+      document.getElementById("titleWords").textContent = `Top ${TOP_N} — Most words`;
+      document.getElementById("titleTimes").textContent = `Top ${TOP_N} — Most times spoken`;
+
+      const [wRows, tRows, wpRows] = await Promise.all([
+        rpc(RPC_TOP_WORDS, { sitting_dates: dates }),
+        rpc(RPC_TOP_TIMES, { sitting_dates: dates }),
+        rpc(RPC_WP_SHARE, { sitting_dates: dates })
+      ]);
+
+      const allWords = Array.isArray(wRows) ? wRows : [];
+      const allTimes = Array.isArray(tRows) ? tRows : [];
+
+      let wpTurns = 0;
+      let totalTurns = 0;
+      const wpArr = Array.isArray(wpRows) ? wpRows : (wpRows ? [wpRows] : []);
+      for (const r of wpArr) {
+        wpTurns += Number(r?.wp_turns ?? 0) || 0;
+        totalTurns += Number(r?.total_turns ?? 0) || 0;
+      }
+
+      // ===== Chart 1: Top N words =====
+      // Expected fields from RPC: mp_name_cleaned, word_count
+      const topWords = aggregateTopN(allWords, "word_count", "mp_name_cleaned", TOP_N);
+      const wordsLabels = topWords.map(x => x.name);
+      const wordsData = topWords.map(x => x.value);
+      const wordsValueLabels = wordsData.map(v => v.toLocaleString());
+
+      if (chartWords) chartWords.destroy();
+      if (wordsLabels.length === 0) {
+        // Render an empty chart with a friendly status instead of a blank huge area.
+        setStatus("No rows returned for Top words (check RPC fields).");
+      } else {
+        chartWords = makeHBar("chartWords", wordsLabels, wordsData, wordsValueLabels);
+      }
+
+      // ===== Chart 2: Top N times spoken =====
+      // Expected fields from RPC: mp_name_cleaned, times_spoken
+      const topTimes = aggregateTopN(allTimes, "times_spoken", "mp_name_cleaned", TOP_N);
+      const timesLabels = topTimes.map(x => x.name);
+      const timesData = topTimes.map(x => x.value);
+      const timesValueLabels = timesData.map(v => v.toLocaleString());
+
+      if (chartTimes) chartTimes.destroy();
+      if (timesLabels.length === 0) {
+        setStatus("No rows returned for Top times spoken (check RPC fields).");
+      } else {
+        chartTimes = makeHBar("chartTimes", timesLabels, timesData, timesValueLabels);
+      }
+
+      // ===== WP share KPI =====
+      const pct = totalTurns > 0 ? (wpTurns / totalTurns) * 100 : null;
+      document.getElementById("wpPct").textContent = (pct == null) ? "—" : `${pct.toFixed(1)}%`;
+      document.getElementById("wpDetail").textContent = (pct == null)
+        ? "No rows returned."
+        : `WP turns: ${wpTurns.toLocaleString()} / Total turns: ${totalTurns.toLocaleString()}`;
+
+      // ===== AI summary placeholder table =====
+      const tbody = document.getElementById("aiTableBody");
+      tbody.innerHTML = "";
+      for (const d of dates.slice().sort().reverse()) {
+        const tr = document.createElement("tr");
+        const td1 = document.createElement("td");
+        const td2 = document.createElement("td");
+        td1.textContent = d;
+        td2.textContent = "(pending get_ai_summary)";
+        tr.appendChild(td1);
+        tr.appendChild(td2);
+        tbody.appendChild(tr);
+      }
+
+      const wordsShown = wordsLabels.length;
+      const timesShown = timesLabels.length;
+      const warn = (wordsShown < TOP_N || timesShown < TOP_N)
+        ? " (If this keeps showing < Top N, your RPC is probably returning only Top 10 — update it to return more rows.)"
+        : "";
+      setStatus(`Loaded ${dates.length} sitting date(s). Showing ${wordsShown}/${TOP_N} (words) and ${timesShown}/${TOP_N} (times).${warn}`);
+
+    } catch (e) {
+      console.error(e);
+      const msg = (e && e.message) ? e.message : String(e);
+      setStatus("Error — see console.");
+      alert(msg);
+    }
+  }
+
+  document.getElementById("btnRun").addEventListener("click", run);
+
+  // Boot
+  loadSittings();
+  </script>
+</body>
+</html>
