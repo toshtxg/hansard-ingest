@@ -26,3 +26,7 @@ jobs:
           DEBUG: "false"
           SAVE_JSON: "false"
           MAX_DAYS_PER_RUN: "0"
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          AI_ENABLED: "true"
+          AI_PROVIDER: "openai"
+          OPENAI_MODEL: "gpt-4o-mini"
