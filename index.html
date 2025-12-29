@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Singapore Hansard — Sitting Dashboard</title>
+  <title>Singapore Hansard — Dashboard</title>
   <style>
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 16px; color: #111; }
     h1 { margin: 0 0 12px; font-size: 22px; }
@@ -75,7 +75,7 @@
       <div class="chart-wrap">
         <canvas id="chartWords" class="chart-canvas"></canvas>
       </div>
-      <div class="note">Source: RPC <code>top10_words</code>, filtered by selected sitting date(s). (UI shows Top N from returned rows)</div>
+      <div class="note">Source: RPC <code>top10_words</code>. Parameter: <code>sitting_dates</code> (array). UI aggregates across selected dates and shows Top N.</div>
     </div>
 
     <div class="card">
@@ -83,7 +83,7 @@
       <div class="chart-wrap">
         <canvas id="chartTimes" class="chart-canvas"></canvas>
       </div>
-      <div class="note">Source: RPC <code>top10_times_spoken</code>, filtered by selected sitting date(s). (UI shows Top N from returned rows)</div>
+      <div class="note">Source: RPC <code>top10_times_spoken</code>. Parameter: <code>sitting_dates</code> (array). UI aggregates across selected dates and shows Top N.</div>
     </div>
 
     <div class="card full">
@@ -93,7 +93,7 @@
           <div id="wpPct" class="kpi">—</div>
           <div id="wpDetail" class="kpi-sub">—</div>
         </div>
-        <div class="muted">Source: RPC <code>wp_share</code>. (Expected fields: <code>wp_turns</code>, <code>total_turns</code>. Parameter: <code>sitting_dates</code>.)</div>
+        <div class="muted">Source: RPC <code>wp_share</code>. Parameter: <code>sitting_dates</code> (array). Expected fields: <code>wp_turns</code>, <code>total_turns</code>.</div>
       </div>
     </div>
 
@@ -122,6 +122,7 @@
   const RPC_TOP_WORDS = "/rest/v1/rpc/top10_words";
   const RPC_TOP_TIMES = "/rest/v1/rpc/top10_times_spoken";
   const RPC_WP_SHARE = "/rest/v1/rpc/wp_share";
+  const RPC_AI_SUMMARY = "/rest/v1/rpc/get_ai_summary";
 
   // Optional (recommended): create this RPC to populate the date filter
   const RPC_LIST_SITTINGS = "/rest/v1/rpc/list_sittings";
@@ -144,6 +145,15 @@
     });
     if (!res.ok) throw new Error(await res.text());
     return res.json();
+  }
+
+  async function rpcSafe(path, payload) {
+    try {
+      return await rpc(path, payload);
+    } catch (e) {
+      console.warn(`[rpcSafe] ${path} failed`, e);
+      return null;
+    }
   }
 
   function setStatus(msg) {
@@ -320,10 +330,11 @@
       document.getElementById("titleWords").textContent = `Top ${TOP_N} — Most words`;
       document.getElementById("titleTimes").textContent = `Top ${TOP_N} — Most times spoken`;
 
-      const [wRows, tRows, wpRows] = await Promise.all([
+      const [wRows, tRows, wpRows, aiRowsRaw] = await Promise.all([
         rpc(RPC_TOP_WORDS, { sitting_dates: dates }),
         rpc(RPC_TOP_TIMES, { sitting_dates: dates }),
-        rpc(RPC_WP_SHARE, { sitting_dates: dates })
+        rpc(RPC_WP_SHARE, { sitting_dates: dates }),
+        rpcSafe(RPC_AI_SUMMARY, { sitting_dates: dates })
       ]);
 
       const allWords = Array.isArray(wRows) ? wRows : [];
@@ -373,15 +384,39 @@
         ? "No rows returned."
         : `WP turns: ${wpTurns.toLocaleString()} / Total turns: ${totalTurns.toLocaleString()}`;
 
-      // ===== AI summary placeholder table =====
+      // ===== AI summary table =====
       const tbody = document.getElementById("aiTableBody");
       tbody.innerHTML = "";
+
+      // Expected shapes (any is OK):
+      // 1) [{ sitting_date: 'YYYY-MM-DD', summary_3_sentences: '...' }, ...]
+      // 2) [{ sitting_date: 'YYYY-MM-DD', summary: '...' }, ...]
+      // 3) RPC not ready -> aiRowsRaw = null
+      const aiRows = Array.isArray(aiRowsRaw) ? aiRowsRaw : (aiRowsRaw ? [aiRowsRaw] : []);
+      const aiByDate = new Map();
+      for (const r of aiRows) {
+        const d = (r?.sitting_date ?? r?.date ?? r?.sittingDate ?? "").toString();
+        const s = (r?.summary_3_sentences ?? r?.summary ?? r?.text ?? "").toString();
+        if (d) aiByDate.set(d, s);
+      }
+
+      // Render selected dates newest-first
       for (const d of dates.slice().sort().reverse()) {
         const tr = document.createElement("tr");
         const td1 = document.createElement("td");
         const td2 = document.createElement("td");
         td1.textContent = d;
-        td2.textContent = "(pending get_ai_summary)";
+
+        const summary = aiByDate.get(d);
+        if (summary && summary.trim().length > 0) {
+          td2.textContent = summary;
+        } else {
+          td2.className = "muted";
+          td2.textContent = aiRowsRaw === null
+            ? "(AI summary RPC not available yet)"
+            : "(No summary found for this date)";
+        }
+
         tr.appendChild(td1);
         tr.appendChild(td2);
         tbody.appendChild(tr);
