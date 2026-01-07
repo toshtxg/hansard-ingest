@@ -1,0 +1,143 @@
+from datetime import date, datetime
+from typing import Optional
+
+import pandas as pd
+
+from .config import (
+    AI_ENABLED,
+    DEBUG,
+    SKIP_DB,
+    SUPABASE_SERVICE_ROLE_KEY,
+    SUPABASE_URL,
+)
+from .utils import chunk_records, normalize_df_pk_cols
+
+# Supabase is optional for local parsing runs (e.g., SKIP_DB=true).
+# We import it lazily so the script can run even if the package isn't installed.
+try:
+    from supabase import create_client, Client  # type: ignore
+except ModuleNotFoundError:
+    create_client = None  # type: ignore
+    Client = object  # type: ignore
+
+
+def require_env():
+    if SKIP_DB:
+        return
+    missing = []
+    if not SUPABASE_URL:
+        missing.append("SUPABASE_URL")
+    if not SUPABASE_SERVICE_ROLE_KEY:
+        missing.append("SUPABASE_SERVICE_ROLE_KEY")
+    if missing:
+        raise RuntimeError("Missing required env vars: " + ", ".join(missing))
+
+
+def supabase_client() -> Client:
+    require_env()
+    if create_client is None:
+        raise RuntimeError(
+            "Python package 'supabase' is not installed. Install it with: pip install supabase"
+        )
+    return create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+
+
+def get_latest_sitting(sb: Client) -> Optional[date]:
+    resp = sb.table("hansard_sittings").select("sitting_date").order("sitting_date", desc=True).limit(1).execute()
+    if resp.data:
+        return datetime.fromisoformat(resp.data[0]["sitting_date"]).date()
+    return None
+
+
+def upsert_all(
+    sb: Client,
+    df_att: pd.DataFrame,
+    df_ptba: pd.DataFrame,
+    df_speech: pd.DataFrame,
+    sitting_iso: str,
+    source_url: str,
+    ai_summary_row: Optional[dict] = None,
+):
+    """Upsert parsed data into Supabase.
+
+    Postgres raises `ON CONFLICT DO UPDATE command cannot affect row a second time`
+    when a *single upsert statement* contains multiple rows with the same conflict key.
+    This usually means our parsed payload contains duplicates for the table's PK.
+
+    We therefore:
+      1) normalize PK fields (strip whitespace; stable string conversion)
+      2) drop duplicates on the real PK
+      3) upsert in batches with explicit on_conflict targets
+    """
+
+    # Attendance PK: (sitting_date, mp_name_raw)
+    df_att_u = df_att
+    if df_att_u is not None and not df_att_u.empty and {"sitting_date", "mp_name_raw"}.issubset(df_att_u.columns):
+        df_att_u = normalize_df_pk_cols(df_att_u, ["sitting_date", "mp_name_raw"])
+        if DEBUG:
+            dup_mask = df_att_u.duplicated(subset=["sitting_date", "mp_name_raw"], keep=False)
+            if dup_mask.any():
+                print("[DEBUG] Duplicate attendance PK rows BEFORE de-dup:")
+                print(df_att_u.loc[dup_mask, ["sitting_date", "mp_name_raw"]].value_counts().head(50))
+        df_att_u = df_att_u.drop_duplicates(subset=["sitting_date", "mp_name_raw"], keep="first")
+
+    # PTBA PK: (sitting_date, mp_name_raw, ptba_from, ptba_to)
+    df_ptba_u = df_ptba
+    if df_ptba_u is not None and not df_ptba_u.empty and {"sitting_date", "mp_name_raw", "ptba_from", "ptba_to"}.issubset(df_ptba_u.columns):
+        df_ptba_u = normalize_df_pk_cols(df_ptba_u, ["sitting_date", "mp_name_raw", "ptba_from", "ptba_to"])
+        if DEBUG:
+            dup_mask = df_ptba_u.duplicated(subset=["sitting_date", "mp_name_raw", "ptba_from", "ptba_to"], keep=False)
+            if dup_mask.any():
+                print("[DEBUG] Duplicate PTBA PK rows BEFORE de-dup:")
+                print(df_ptba_u.loc[dup_mask, ["sitting_date", "mp_name_raw", "ptba_from", "ptba_to"]].value_counts().head(50))
+        df_ptba_u = df_ptba_u.drop_duplicates(subset=["sitting_date", "mp_name_raw", "ptba_from", "ptba_to"], keep="first")
+
+    # Speeches PK: (sitting_date, row_num)
+    df_speech_u = df_speech
+    if df_speech_u is not None and not df_speech_u.empty and {"sitting_date", "row_num"}.issubset(df_speech_u.columns):
+        df_speech_u = normalize_df_pk_cols(df_speech_u, ["sitting_date"])
+        if DEBUG:
+            dup_mask = df_speech_u.duplicated(subset=["sitting_date", "row_num"], keep=False)
+            if dup_mask.any():
+                print("[DEBUG] Duplicate speeches PK rows BEFORE de-dup:")
+                print(df_speech_u.loc[dup_mask, ["sitting_date", "row_num"]].value_counts().head(50))
+        df_speech_u = df_speech_u.drop_duplicates(subset=["sitting_date", "row_num"], keep="first")
+
+    # Upsert batches with explicit conflict targets
+    try:
+        for batch in chunk_records(df_att_u.to_dict("records"), 500):
+            sb.table("hansard_attendance").upsert(batch, on_conflict="sitting_date,mp_name_raw").execute()
+    except Exception as e:
+        raise RuntimeError(f"Upsert failed for hansard_attendance ({sitting_iso}): {e}")
+
+    try:
+        for batch in chunk_records(df_ptba_u.to_dict("records"), 500):
+            sb.table("hansard_ptba").upsert(batch, on_conflict="sitting_date,mp_name_raw,ptba_from,ptba_to").execute()
+    except Exception as e:
+        raise RuntimeError(f"Upsert failed for hansard_ptba ({sitting_iso}): {e}")
+
+    try:
+        for batch in chunk_records(df_speech_u.to_dict("records"), 300):
+            sb.table("hansard_speeches").upsert(batch, on_conflict="sitting_date,row_num").execute()
+    except Exception as e:
+        raise RuntimeError(f"Upsert failed for hansard_speeches ({sitting_iso}): {e}")
+
+    try:
+        sb.table("hansard_sittings").upsert(
+            {"sitting_date": sitting_iso, "source_url": source_url},
+            on_conflict="sitting_date",
+        ).execute()
+    except Exception as e:
+        raise RuntimeError(f"Upsert failed for hansard_sittings ({sitting_iso}): {e}")
+
+    # Optional AI summary table (safe if AI not enabled, and safe if table doesn't exist)
+    if AI_ENABLED and ai_summary_row and ai_summary_row.get("sitting_date") == sitting_iso:
+        try:
+            # NOTE: assumes a table named hansard_ai_summaries exists with PK on sitting_date
+            # Columns expected: sitting_date, provider, model, summary_3_sentences, updated_at
+            # If your schema differs, adjust here.
+            sb.table("hansard_ai_summaries").upsert(ai_summary_row, on_conflict="sitting_date").execute()
+        except Exception as e:
+            # Don't fail ingestion if AI summary insert fails
+            if DEBUG:
+                print(f"[DEBUG] AI summary upsert skipped/failed for {sitting_iso}: {e}")
