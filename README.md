@@ -4,12 +4,13 @@
 This project ingests Singapore Parliament Hansard transcripts, parses attendance/PTBA/speeches,
 optionally generates an AI summary per sitting, writes the cleaned data to Supabase, and powers
 `index.html`, a small dashboard that visualizes speaking activity with charts and KPIs.
+PTBA = Permission to be Absent (approved leave windows for MPs).
 
 ## How it flows to `index.html`
 1) `ingest.py` calls `hansard_ingest.main.ingest()` to run an ingestion pass over one or more dates.
 2) `hansard_ingest.fetch.fetch_hansard_json()` pulls the raw Hansard JSON from the Parliament API.
 3) `hansard_ingest.parse.parse_one_sitting()` parses HTML sections into three DataFrames:
-   attendance, PTBA (Petitions/Questions?), and speech rows with per-speaker metadata.
+   attendance, PTBA, and speech rows with per-speaker metadata.
 4) `hansard_ingest.db.upsert_all()` de-duplicates and upserts rows into Supabase tables:
    `hansard_attendance`, `hansard_ptba`, `hansard_speeches`, and `hansard_sittings`.
 5) `hansard_ingest.ai_summary.generate_ai_summary()` (optional) adds a 3-sentence sitting summary

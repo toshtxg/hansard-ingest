@@ -57,11 +57,7 @@
     <div id="sittingsFallback" class="muted" style="display:none; margin-top:10px;">
       <div class="err" style="margin-bottom:6px;">Could not load sitting dates automatically.</div>
       <div>
-        You have 2 options:
-        <ul style="margin: 6px 0 0 18px; padding: 0;">
-          <li><b>Recommended</b>: create an RPC called <code>list_sittings(limit_n int)</code> (or a non-overloaded <code>list_sittings</code>) that returns <code>[{ sitting_date: 'YYYY-MM-DD' }, ...]</code> ordered newest-first.</li>
-          <li>Temporary: paste dates below (YYYY-MM-DD, one per line), then click Run.</li>
-        </ul>
+        Paste dates below (YYYY-MM-DD, one per line), then click Run.
       </div>
       <div style="margin-top:8px;">
         <textarea id="manualDates" rows="4" style="width: 100%; max-width: 520px; font-size: 12px; padding: 8px;" placeholder="2024-07-02\n2024-08-07"></textarea>
@@ -75,7 +71,7 @@
       <div class="chart-wrap">
         <canvas id="chartWords" class="chart-canvas"></canvas>
       </div>
-      <div class="note">Source: RPC <code>top10_words</code>. Parameter: <code>sitting_dates</code> (array). UI aggregates across selected dates and shows Top N.</div>
+      <div class="note">Aggregated across selected dates.</div>
     </div>
 
     <div class="card">
@@ -83,7 +79,7 @@
       <div class="chart-wrap">
         <canvas id="chartTimes" class="chart-canvas"></canvas>
       </div>
-      <div class="note">Source: RPC <code>top10_times_spoken</code>. Parameter: <code>sitting_dates</code> (array). UI aggregates across selected dates and shows Top N.</div>
+      <div class="note">Aggregated across selected dates.</div>
     </div>
 
     <div class="card full">
@@ -93,13 +89,13 @@
           <div id="wpPct" class="kpi">—</div>
           <div id="wpDetail" class="kpi-sub">—</div>
         </div>
-        <div class="muted">Source: RPC <code>wp_share</code>. Parameter: <code>sitting_dates</code> (array). Expected fields: <code>wp_turns</code>, <code>total_turns</code>.</div>
+        <div class="muted">Share of total turns across selected dates.</div>
       </div>
     </div>
 
     <div class="card full">
       <h3>What was discussed? (AI summary)</h3>
-      <div class="muted">Placeholder — you’ll wire this to your <code>get_ai_summary</code> later.</div>
+      <div class="muted">Summary per sitting date.</div>
       <table style="margin-top:10px;">
         <thead>
           <tr><th style="width: 160px;">Sitting date</th><th>Summary</th></tr>
