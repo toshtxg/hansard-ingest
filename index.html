@@ -46,6 +46,13 @@
           Top N
           <input id="topN" type="number" min="1" max="50" value="15" style="width: 90px;" />
         </label>
+        <label style="gap: 4px;">
+          <span>Filter</span>
+          <span style="display:inline-flex; align-items:center; gap:6px; font-size: 12px;">
+            <input id="excludeChair" type="checkbox" checked />
+            Exclude Speaker/Deputy Speaker
+          </span>
+        </label>
         <div>
           <button id="btnRun">Run</button>
           <span id="status" class="status"></span>
@@ -325,10 +332,13 @@
       document.getElementById("topN").value = String(TOP_N);
       document.getElementById("titleWords").textContent = `Top ${TOP_N} — Most words`;
       document.getElementById("titleTimes").textContent = `Top ${TOP_N} — Most times spoken`;
+      const excludeChair = document.getElementById("excludeChair")?.checked ?? true;
+
+      const payload = { sitting_dates: dates, exclude_chair: excludeChair };
 
       const [wRows, tRows, wpRows, aiRowsRaw] = await Promise.all([
-        rpc(RPC_TOP_WORDS, { sitting_dates: dates }),
-        rpc(RPC_TOP_TIMES, { sitting_dates: dates }),
+        rpc(RPC_TOP_WORDS, payload),
+        rpc(RPC_TOP_TIMES, payload),
         rpc(RPC_WP_SHARE, { sitting_dates: dates }),
         rpcSafe(RPC_AI_SUMMARY, { sitting_dates: dates })
       ]);
