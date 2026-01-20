@@ -116,11 +116,35 @@ def upsert_all(
     except Exception as e:
         raise RuntimeError(f"Upsert failed for hansard_ptba ({sitting_iso}): {e}")
 
-    try:
-        for batch in chunk_records(df_speech_u.to_dict("records"), 300):
+    def _upsert_speeches(df: pd.DataFrame):
+        for batch in chunk_records(df.to_dict("records"), 300):
             sb.table("hansard_speeches").upsert(batch, on_conflict="sitting_date,row_num").execute()
+
+    try:
+        _upsert_speeches(df_speech_u)
     except Exception as e:
-        raise RuntimeError(f"Upsert failed for hansard_speeches ({sitting_iso}): {e}")
+        # Backward-compat: if the DB schema hasn't been updated with new speech columns yet,
+        # retry by dropping known "extra" columns.
+        extra_cols = [
+            "discussion_title",
+            "section_type",
+            "dim_is_question_for_oral_answer",
+            "dim_is_oral_speech",
+            "dim_is_written_answer_not_answered",
+            "dim_is_written_answer_to_questions",
+        ]
+        msg = str(e)
+        present = [c for c in extra_cols if df_speech_u is not None and c in df_speech_u.columns]
+        if present and any(c in msg for c in present):
+            if DEBUG:
+                print(f"[DEBUG] hansard_speeches upsert failed; retrying without columns: {present}")
+            df_retry = df_speech_u.drop(columns=present)
+            try:
+                _upsert_speeches(df_retry)
+            except Exception as e2:
+                raise RuntimeError(f"Upsert failed for hansard_speeches ({sitting_iso}): {e2}")
+        else:
+            raise RuntimeError(f"Upsert failed for hansard_speeches ({sitting_iso}): {e}")
 
     try:
         sb.table("hansard_sittings").upsert(

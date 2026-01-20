@@ -25,6 +25,19 @@ def build_ai_summary_prompt(sitting_date_iso: str, speech_df: pd.DataFrame) -> s
             "3) Why we should care\n"
         )
 
+    # Prefer only spoken rows when available (exclude question listings + written answers)
+    if "dim_is_oral_speech" in speech_df.columns:
+        speech_df = speech_df[speech_df["dim_is_oral_speech"] == 1]
+        if speech_df.empty:
+            return (
+                f"Sitting date: {sitting_date_iso}.\n"
+                "No oral speech content was parsed for this sitting.\n\n"
+                "Write a 3-sentence summary:\n"
+                "1) What topics were talked about\n"
+                "2) How it impacts Singapore\n"
+                "3) Why we should care\n"
+            )
+
     # Keep only substantive fields; concatenate in order
     parts = []
     for _, r in speech_df.sort_values(["row_num"]).iterrows():

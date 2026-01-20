@@ -6,7 +6,7 @@ load_dotenv()
 # ---------------------------
 # Version stamp so you can confirm you are running the file you just edited.
 # Bump this when you make changes.
-SCRIPT_VERSION = "2025-12-29.1"
+SCRIPT_VERSION = "2026-01-20.5"
 
 # --------- CONFIG ----------
 BASE_URL = "https://sprs.parl.gov.sg/search/getHansardReport/"

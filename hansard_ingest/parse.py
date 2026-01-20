@@ -7,6 +7,7 @@ from bs4 import BeautifulSoup
 
 from .config import BASE_URL, DEBUG
 from .names import (
+    HONORIFICS_RE,
     best_fuzzy_match,
     chair_role,
     clean_mp_name_from_attendance,
@@ -198,8 +199,6 @@ def parse_one_sitting(data: dict) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFr
     # Start with metadata speaker if provided
     current_chair = (data.get("metadata") or {}).get("speaker") or "Mr Speaker"
 
-    wa_skipped = 0
-
     def append_continuation(text: str):
         if not speech_rows:
             return
@@ -209,25 +208,32 @@ def parse_one_sitting(data: dict) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFr
         speech_rows[-1]["speech_details"] = (speech_rows[-1]["speech_details"] + "\n\n" + text2).strip()
         speech_rows[-1]["word_count"] = word_count(speech_rows[-1]["speech_details"])
 
+    def strip_question_number(text: str) -> str:
+        if not text:
+            return text
+        # Remove leading question numbers like "1 Mr ..." or "2 To ask ...", even mid-sentence.
+        pat = r"(^|\s)\d{1,3}\s+(?=(?:%s)\b|To ask\b)" % HONORIFICS_RE
+        cleaned = re.sub(pat, " ", str(text), flags=re.I)
+        return re.sub(r"\s+", " ", cleaned).strip()
+
     for sec in data.get("takesSectionVOList", []):
-        # Exclude Question-Time written answers listings (not actually spoken in the chamber)
         sec_type_raw = (sec.get("sectionType") or "")
         # Normalize aggressively: strip, uppercase, then keep only letters (handles hidden chars / BOM / NBSP)
         sec_type = re.sub(r"[^A-Z]", "", sec_type_raw.strip().upper())
+        discussion_title = (sec.get("title") or "").strip() or None
+        is_written_section = sec_type in {"WA", "WANA"}
         html = sec.get("content", "") or ""
 
-        # 'WA' (Written Answers) and 'WANA' (Written Answers Not Answered) are not spoken in the chamber.
-        # Use prefix match to catch future variants like 'WA*'.
-        if sec_type.startswith("WA"):
-            wa_skipped += 1
-            continue
+        dim_is_written_answer_to_questions = 1 if sec_type == "WA" else 0
+        dim_is_written_answer_not_answered = 1 if sec_type == "WANA" else 0
 
         if not html:
             continue
         soup = BeautifulSoup(html, "html.parser")
 
         for tag in soup.find_all(["p","h6","h5","h4","h3","h2","h1"]):
-            text = tag.get_text(" ", strip=True)
+            raw_text = tag.get_text(" ", strip=True)
+            text = strip_question_number(raw_text)
             if not text:
                 continue
 
@@ -243,7 +249,8 @@ def parse_one_sitting(data: dict) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFr
 
             strong = tag.find("strong")
             if strong:
-                full = tag.get_text(" ", strip=True)
+                full_raw = raw_text
+                full = text
 
                 # Speaker labels sometimes have split <strong> tags (e.g. '<strong>Mr </strong><strong>Ong Ye Kung</strong>:').
                 # Use the visible text up to the first ':' as the speaker label when available.
@@ -256,6 +263,34 @@ def parse_one_sitting(data: dict) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFr
 
                 if not speaker_raw:
                     append_continuation(full)
+                    continue
+
+                # Non-spoken Question Time question listings like:
+                #   '13 Mr X asked the Minister ...'
+                # We want to keep these rows for metadata, but mark them as non-oral-speech.
+                if ":" not in full and is_question_paper_item(speaker_raw, full_raw):
+                    out_speaker_raw = speaker_raw
+                    out_mp_fuzzy = canonicalize_to_attendance(clean_mp_name_from_attendance(speaker_raw) or speaker_raw)
+                    out_dim_speaker = None if is_written_section else chair_role(current_chair)
+                    out_chair_name = None if is_written_section else chair_display_name(current_chair)
+                    row_num += 1
+                    speech_rows.append({
+                        "sitting_date": sitting_date,
+                        "parliament_no": parliament_no,
+                        "row_num": row_num,
+                        "discussion_title": discussion_title,
+                        "section_type": sec_type,
+                        "mp_name_raw": out_speaker_raw,
+                        "mp_name_fuzzy_matched": out_mp_fuzzy,
+                        "speech_details": full,
+                        "word_count": word_count(full),
+                        "dim_speaker": out_dim_speaker,
+                        "chair_name_raw": out_chair_name,
+                        "dim_is_question_for_oral_answer": 1 if sec_type == "OA" else 0,
+                        "dim_is_oral_speech": 0,
+                        "dim_is_written_answer_not_answered": dim_is_written_answer_not_answered,
+                        "dim_is_written_answer_to_questions": dim_is_written_answer_to_questions,
+                    })
                     continue
 
                 inferred = infer_chair_from_speaker_label(speaker_raw)
@@ -277,9 +312,6 @@ def parse_one_sitting(data: dict) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFr
 
                 speech = strip_trailing_chair_call(speech).strip()
                 if not speech:
-                    continue
-
-                if is_question_paper_item(speaker_raw, speech):
                     continue
 
                 role_as_speaker = chair_role(speaker_raw)
@@ -304,34 +336,46 @@ def parse_one_sitting(data: dict) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFr
                         best, score = best_fuzzy_match(q_clean, attendance_choices_clean)
                         # Slightly looser threshold to reduce false negatives for older Hansards
                         mp_fuzzy = canonicalize_to_attendance(best) if score >= 0.75 else None
+                out_dim_speaker = None if is_written_section else chair_role(current_chair)
+                out_chair_name = None if is_written_section else chair_display_name(current_chair)
 
                 row_num += 1
+                dim_is_oral_speech = 0 if (dim_is_written_answer_to_questions or dim_is_written_answer_not_answered) else 1
                 speech_rows.append({
                     "sitting_date": sitting_date,
                     "parliament_no": parliament_no,
                     "row_num": row_num,
+                    "discussion_title": discussion_title,
+                    "section_type": sec_type,
                     "mp_name_raw": speaker_raw,
                     "mp_name_fuzzy_matched": mp_fuzzy,
                     "speech_details": speech,
                     "word_count": word_count(speech),
-                    "dim_speaker": chair_role(current_chair),
-                    "chair_name_raw": chair_display_name(current_chair),
+                    "dim_speaker": out_dim_speaker,
+                    "chair_name_raw": out_chair_name,
+                    "dim_is_question_for_oral_answer": 0,
+                    "dim_is_oral_speech": dim_is_oral_speech,
+                    "dim_is_written_answer_not_answered": dim_is_written_answer_not_answered,
+                    "dim_is_written_answer_to_questions": dim_is_written_answer_to_questions,
                 })
             else:
                 append_continuation(text)
 
     if speech_rows:
         df_speech = pd.DataFrame(speech_rows)[[
-            "parliament_no","sitting_date","row_num","mp_name_raw","mp_name_fuzzy_matched",
-            "speech_details","word_count","dim_speaker","chair_name_raw"
+            "parliament_no","sitting_date","row_num","discussion_title","section_type",
+            "mp_name_raw","mp_name_fuzzy_matched","speech_details","word_count",
+            "dim_speaker","chair_name_raw",
+            "dim_is_question_for_oral_answer","dim_is_oral_speech",
+            "dim_is_written_answer_not_answered","dim_is_written_answer_to_questions",
         ]]
     else:
         df_speech = pd.DataFrame(columns=[
-            "parliament_no","sitting_date","row_num","mp_name_raw","mp_name_fuzzy_matched",
-            "speech_details","word_count","dim_speaker","chair_name_raw"
+            "parliament_no","sitting_date","row_num","discussion_title","section_type",
+            "mp_name_raw","mp_name_fuzzy_matched","speech_details","word_count",
+            "dim_speaker","chair_name_raw",
+            "dim_is_question_for_oral_answer","dim_is_oral_speech",
+            "dim_is_written_answer_not_answered","dim_is_written_answer_to_questions",
         ])
-
-    if DEBUG:
-        print(f"parse_one_sitting: skipped {wa_skipped} WA/WANA sections")
 
     return df_att, df_ptba, df_speech, source_url, parliament_no, sitting_dt

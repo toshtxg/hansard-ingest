@@ -334,12 +334,12 @@
       document.getElementById("titleTimes").textContent = `Top ${TOP_N} — Most times spoken`;
       const excludeChair = document.getElementById("excludeChair")?.checked ?? true;
 
-      const payload = { sitting_dates: dates, exclude_chair: excludeChair };
+      const payload = { sitting_dates: dates, exclude_chair: excludeChair, limit_n: TOP_N, oral_only: true };
 
       const [wRows, tRows, wpRows, aiRowsRaw] = await Promise.all([
         rpc(RPC_TOP_WORDS, payload),
         rpc(RPC_TOP_TIMES, payload),
-        rpc(RPC_WP_SHARE, { sitting_dates: dates }),
+        rpc(RPC_WP_SHARE, { sitting_dates: dates, oral_only: true }),
         rpcSafe(RPC_AI_SUMMARY, { sitting_dates: dates })
       ]);
 
