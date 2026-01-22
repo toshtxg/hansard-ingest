@@ -1,5 +1,7 @@
 import csv
 import json
+import math
+import numbers
 import re
 from datetime import date, datetime
 from typing import List, Optional
@@ -102,3 +104,20 @@ def maybe_write_json(data: dict, path: str):
 def chunk_records(records: List[dict], n: int):
     for i in range(0, len(records), n):
         yield records[i : i + n]
+
+
+def scrub_records_for_json(records: List[dict]) -> List[dict]:
+    """Replace NaN/Inf/NaT values with None so JSON encoding won't fail."""
+    cleaned = []
+    for row in records:
+        out = {}
+        for k, v in row.items():
+            if v is None or pd.isna(v):
+                out[k] = None
+                continue
+            if isinstance(v, numbers.Real) and not math.isfinite(v):
+                out[k] = None
+                continue
+            out[k] = v
+        cleaned.append(out)
+    return cleaned

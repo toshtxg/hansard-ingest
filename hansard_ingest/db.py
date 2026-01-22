@@ -10,7 +10,7 @@ from .config import (
     SUPABASE_SERVICE_ROLE_KEY,
     SUPABASE_URL,
 )
-from .utils import chunk_records, normalize_df_pk_cols
+from .utils import chunk_records, normalize_df_pk_cols, scrub_records_for_json
 
 # Supabase is optional for local parsing runs (e.g., SKIP_DB=true).
 # We import it lazily so the script can run even if the package isn't installed.
@@ -103,21 +103,26 @@ def upsert_all(
                 print(df_speech_u.loc[dup_mask, ["sitting_date", "row_num"]].value_counts().head(50))
         df_speech_u = df_speech_u.drop_duplicates(subset=["sitting_date", "row_num"], keep="first")
 
+    def _json_records(df: pd.DataFrame):
+        if df is None or df.empty:
+            return []
+        return scrub_records_for_json(df.to_dict("records"))
+
     # Upsert batches with explicit conflict targets
     try:
-        for batch in chunk_records(df_att_u.to_dict("records"), 500):
+        for batch in chunk_records(_json_records(df_att_u), 500):
             sb.table("hansard_attendance").upsert(batch, on_conflict="sitting_date,mp_name_raw").execute()
     except Exception as e:
         raise RuntimeError(f"Upsert failed for hansard_attendance ({sitting_iso}): {e}")
 
     try:
-        for batch in chunk_records(df_ptba_u.to_dict("records"), 500):
+        for batch in chunk_records(_json_records(df_ptba_u), 500):
             sb.table("hansard_ptba").upsert(batch, on_conflict="sitting_date,mp_name_raw,ptba_from,ptba_to").execute()
     except Exception as e:
         raise RuntimeError(f"Upsert failed for hansard_ptba ({sitting_iso}): {e}")
 
     def _upsert_speeches(df: pd.DataFrame):
-        for batch in chunk_records(df.to_dict("records"), 300):
+        for batch in chunk_records(_json_records(df), 300):
             sb.table("hansard_speeches").upsert(batch, on_conflict="sitting_date,row_num").execute()
 
     try:
@@ -160,7 +165,8 @@ def upsert_all(
             # NOTE: assumes a table named hansard_ai_summaries exists with PK on sitting_date
             # Columns expected: sitting_date, provider, model, summary_3_sentences, updated_at
             # If your schema differs, adjust here.
-            sb.table("hansard_ai_summaries").upsert(ai_summary_row, on_conflict="sitting_date").execute()
+            cleaned = scrub_records_for_json([ai_summary_row])[0]
+            sb.table("hansard_ai_summaries").upsert(cleaned, on_conflict="sitting_date").execute()
         except Exception as e:
             # Don't fail ingestion if AI summary insert fails
             if DEBUG:
