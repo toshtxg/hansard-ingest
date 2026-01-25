@@ -4,12 +4,14 @@ from typing import Optional
 import pandas as pd
 
 from .config import (
+    AI_DRY_RUN,
     AI_ENABLED,
     DEBUG,
     SKIP_DB,
     SUPABASE_SERVICE_ROLE_KEY,
     SUPABASE_URL,
 )
+from .ai_speech_summary import build_summary_update, needs_summary, summarize_row
 from .utils import chunk_records, normalize_df_pk_cols, scrub_records_for_json
 
 # Supabase is optional for local parsing runs (e.g., SKIP_DB=true).
@@ -47,6 +49,60 @@ def get_latest_sitting(sb: Client) -> Optional[date]:
     if resp.data:
         return datetime.fromisoformat(resp.data[0]["sitting_date"]).date()
     return None
+
+
+def summarize_speeches_for_date(sb: Client, sitting_iso: str) -> None:
+    if not AI_ENABLED or AI_DRY_RUN:
+        return
+
+    try:
+        resp = (
+            sb.table("hansard_speeches")
+            .select(
+                "sitting_date,row_num,speech_details,mp_name_fuzzy_matched,mp_name_raw,dim_speaker,summary_version,one_liner"
+            )
+            .eq("sitting_date", sitting_iso)
+            .order("row_num")
+            .execute()
+        )
+    except Exception as e:
+        print(f"Speech summary select failed for {sitting_iso}: {e}")
+        return
+
+    rows = resp.data or []
+    for row in rows:
+        if not needs_summary(row.get("one_liner"), row.get("summary_version")):
+            continue
+        if not row.get("sitting_date") or row.get("row_num") is None:
+            continue
+
+        speech = str(row.get("speech_details") or "")
+        metadata = {
+            "speaker_name": row.get("mp_name_fuzzy_matched") or row.get("mp_name_raw") or "",
+            "role": row.get("dim_speaker") or "",
+            "sitting_date": row.get("sitting_date") or sitting_iso,
+        }
+
+        try:
+            summary = summarize_row(speech, metadata)
+        except Exception as e:
+            print(f"Speech summary failed for {sitting_iso} row {row.get('row_num')}: {e}")
+            continue
+
+        if not summary:
+            continue
+
+        update = build_summary_update(summary)
+        try:
+            (
+                sb.table("hansard_speeches")
+                .update(update)
+                .eq("sitting_date", row["sitting_date"])
+                .eq("row_num", row["row_num"])
+                .execute()
+            )
+        except Exception as e:
+            print(f"Speech summary update failed for {sitting_iso} row {row.get('row_num')}: {e}")
 
 
 def upsert_all(
@@ -171,3 +227,9 @@ def upsert_all(
             # Don't fail ingestion if AI summary insert fails
             if DEBUG:
                 print(f"[DEBUG] AI summary upsert skipped/failed for {sitting_iso}: {e}")
+
+    # Optional per-speech summaries (safe to skip if AI not enabled or schema missing)
+    try:
+        summarize_speeches_for_date(sb, sitting_iso)
+    except Exception as e:
+        print(f"Speech summary pass failed for {sitting_iso}: {e}")
