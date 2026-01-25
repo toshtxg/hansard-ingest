@@ -285,6 +285,15 @@ def summarize_row(text: str, metadata: Dict[str, str]) -> Optional[Dict[str, Any
 
 
 def build_summary_update(payload: Dict[str, Any]) -> Dict[str, Any]:
+    if payload.get("segment_type") == "procedural":
+        return {
+            "segment_type": payload["segment_type"],
+            "one_liner": None,
+            "themes": [],
+            "key_claims": [],
+            "summary_version": SUMMARY_VERSION,
+            "summarized_at": datetime.utcnow().isoformat(),
+        }
     return {
         "segment_type": payload["segment_type"],
         "one_liner": payload["one_liner"],
