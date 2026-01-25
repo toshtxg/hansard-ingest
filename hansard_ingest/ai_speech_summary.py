@@ -31,6 +31,15 @@ SYSTEM_PROMPT = (
     "Keep language neutral and literal."
 )
 
+GUIDANCE_PROMPT = (
+    "Guidance:\n"
+    "- one_liner must be specific and literal; avoid generic phrasing like 'supports the Bill' without details.\n"
+    "- Do not name people unless the name appears in the text; do not infer names from metadata.\n"
+    "- Ignore salutations and formalities.\n"
+    "- If the text is procedural (calls next speaker, asks for clarification, order/adjournment), "
+    "set segment_type=procedural and use a short literal one_liner.\n"
+)
+
 JSON_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -81,6 +90,7 @@ def _short_summary_from_text(text: str) -> Dict[str, Any]:
 
 def _build_user_content(text: str, metadata: Dict[str, str]) -> str:
     lines = []
+    lines.append(GUIDANCE_PROMPT.strip())
     if metadata:
         lines.append("Metadata:")
         speaker_name = (metadata.get("speaker_name") or "").strip()
@@ -95,6 +105,19 @@ def _build_user_content(text: str, metadata: Dict[str, str]) -> str:
     lines.append("Text:")
     lines.append(text or "")
     return "\n".join(lines).strip()
+
+
+def infer_role_from_label(label: str) -> str:
+    u = normalize_ws(label or "").upper()
+    if not u:
+        return ""
+    if "DEPUTY SPEAKER" in u:
+        return "chair"
+    if "SPEAKER" in u:
+        return "chair"
+    if "CHAIRMAN" in u or "CHAIR" in u:
+        return "chair"
+    return ""
 
 
 def _extract_output_text(data: Dict[str, Any]) -> str:
@@ -228,6 +251,8 @@ def summarize_row(text: str, metadata: Dict[str, str]) -> Optional[Dict[str, Any
         return None
 
     cleaned = normalize_ws(text or "")
+    if (metadata or {}).get("role") == "chair" and len(cleaned) < 180:
+        return _short_summary_from_text(cleaned)
     if len(cleaned) < MIN_TEXT_CHARS:
         return _short_summary_from_text(cleaned)
 

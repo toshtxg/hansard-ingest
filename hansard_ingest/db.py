@@ -11,7 +11,12 @@ from .config import (
     SUPABASE_SERVICE_ROLE_KEY,
     SUPABASE_URL,
 )
-from .ai_speech_summary import build_summary_update, needs_summary, summarize_row
+from .ai_speech_summary import (
+    build_summary_update,
+    infer_role_from_label,
+    needs_summary,
+    summarize_row,
+)
 from .utils import chunk_records, normalize_df_pk_cols, scrub_records_for_json
 
 # Supabase is optional for local parsing runs (e.g., SKIP_DB=true).
@@ -77,9 +82,10 @@ def summarize_speeches_for_date(sb: Client, sitting_iso: str) -> None:
             continue
 
         speech = str(row.get("speech_details") or "")
+        speaker_label = row.get("mp_name_raw") or ""
         metadata = {
-            "speaker_name": row.get("mp_name_fuzzy_matched") or row.get("mp_name_raw") or "",
-            "role": row.get("dim_speaker") or "",
+            "speaker_name": speaker_label,
+            "role": infer_role_from_label(speaker_label),
             "sitting_date": row.get("sitting_date") or sitting_iso,
         }
 

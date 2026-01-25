@@ -2,7 +2,12 @@ import argparse
 import sys
 from datetime import datetime
 
-from hansard_ingest.ai_speech_summary import build_summary_update, needs_summary, summarize_row
+from hansard_ingest.ai_speech_summary import (
+    build_summary_update,
+    infer_role_from_label,
+    needs_summary,
+    summarize_row,
+)
 from hansard_ingest.config import AI_DRY_RUN, AI_ENABLED, DEBUG, SKIP_DB, SCRIPT_VERSION
 from hansard_ingest.db import supabase_client
 
@@ -13,7 +18,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--end_date", required=True, help="YYYY-MM-DD")
     p.add_argument("--limit", type=int, default=500, help="Max rows to process (default: 500)")
     p.add_argument("--batch_size", type=int, default=50, help="Fetch batch size (default: 50)")
-    p.add_argument("--progress_every", type=int, default=10, help="Print progress every N rows (default: 10)")
+    p.add_argument("--progress_every", type=int, default=1, help="Update progress every N rows (default: 1)")
     return p.parse_args()
 
 
@@ -23,6 +28,14 @@ def _validate_date(s: str) -> str:
     except ValueError:
         raise RuntimeError(f"Invalid date: {s} (expected YYYY-MM-DD)")
     return s
+
+
+def _print_progress(processed: int, succeeded: int, failed: int, skipped: int, inline: bool = True) -> None:
+    msg = f"Progress: processed={processed} succeeded={succeeded} failed={failed} skipped={skipped}"
+    if inline:
+        print(f"\r{msg}", end="", flush=True)
+    else:
+        print(msg)
 
 
 def main() -> None:
@@ -85,22 +98,19 @@ def main() -> None:
             if not needs_summary(row.get("one_liner"), row.get("summary_version")):
                 skipped += 1
                 if processed % progress_every == 0:
-                    print(
-                        f"Progress: processed={processed} succeeded={succeeded} failed={failed} skipped={skipped}"
-                    )
+                    _print_progress(processed, succeeded, failed, skipped, inline=True)
                 continue
             if not row.get("sitting_date") or row.get("row_num") is None:
                 skipped += 1
                 if processed % progress_every == 0:
-                    print(
-                        f"Progress: processed={processed} succeeded={succeeded} failed={failed} skipped={skipped}"
-                    )
+                    _print_progress(processed, succeeded, failed, skipped, inline=True)
                 continue
 
             speech = str(row.get("speech_details") or "")
+            speaker_label = row.get("mp_name_raw") or ""
             metadata = {
-                "speaker_name": row.get("mp_name_fuzzy_matched") or row.get("mp_name_raw") or "",
-                "role": row.get("dim_speaker") or "",
+                "speaker_name": speaker_label,
+                "role": infer_role_from_label(speaker_label),
                 "sitting_date": row.get("sitting_date") or "",
             }
 
@@ -120,21 +130,21 @@ def main() -> None:
                 succeeded += 1
             except Exception as e:
                 failed += 1
-                print(f"Summary failed for {row.get('sitting_date')} row {row.get('row_num')}: {e}")
+                print(f"\nSummary failed for {row.get('sitting_date')} row {row.get('row_num')}: {e}")
             finally:
                 if processed % progress_every == 0:
-                    print(
-                        f"Progress: processed={processed} succeeded={succeeded} failed={failed} skipped={skipped}"
-                    )
+                    _print_progress(processed, succeeded, failed, skipped, inline=True)
 
         offset += to_fetch
-        print(f"Progress: processed={processed} succeeded={succeeded} failed={failed} skipped={skipped}")
+        _print_progress(processed, succeeded, failed, skipped, inline=True)
 
     attempted = succeeded + failed
     if attempted > 0 and (failed / attempted) > 0.3:
+        print()
         print("Failure rate exceeded 30%; exiting non-zero.")
         sys.exit(1)
 
+    print()
     print(f"Done: processed={processed} succeeded={succeeded} failed={failed} skipped={skipped}")
 
 
