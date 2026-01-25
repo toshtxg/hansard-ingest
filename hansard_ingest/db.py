@@ -80,7 +80,6 @@ def summarize_speeches_for_date(sb: Client, sitting_iso: str) -> None:
             continue
         if not row.get("sitting_date") or row.get("row_num") is None:
             continue
-
         speech = str(row.get("speech_details") or "")
         speaker_label = row.get("mp_name_raw") or ""
         metadata = {

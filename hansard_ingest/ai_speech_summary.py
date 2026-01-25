@@ -88,7 +88,7 @@ def _short_summary_from_text(text: str) -> Dict[str, Any]:
     }
 
 
-def _build_user_content(text: str, metadata: Dict[str, str]) -> str:
+def build_user_content(text: str, metadata: Dict[str, str]) -> str:
     lines = []
     lines.append(GUIDANCE_PROMPT.strip())
     if metadata:
@@ -107,6 +107,14 @@ def _build_user_content(text: str, metadata: Dict[str, str]) -> str:
     return "\n".join(lines).strip()
 
 
+def build_fix_prompt(raw_output: str) -> str:
+    return (
+        "Fix to schema. Output valid JSON only matching the provided schema.\n\n"
+        f"Schema:\n{json.dumps(JSON_SCHEMA, ensure_ascii=True)}\n\n"
+        f"Invalid output:\n{raw_output}\n"
+    )
+
+
 def infer_role_from_label(label: str) -> str:
     u = normalize_ws(label or "").upper()
     if not u:
@@ -120,7 +128,16 @@ def infer_role_from_label(label: str) -> str:
     return ""
 
 
-def _extract_output_text(data: Dict[str, Any]) -> str:
+def short_circuit_summary(text: str, metadata: Dict[str, str]) -> Optional[Dict[str, Any]]:
+    cleaned = normalize_ws(text or "")
+    if (metadata or {}).get("role") == "chair" and len(cleaned) < 180:
+        return _short_summary_from_text(cleaned)
+    if len(cleaned) < MIN_TEXT_CHARS:
+        return _short_summary_from_text(cleaned)
+    return None
+
+
+def extract_output_text(data: Dict[str, Any]) -> str:
     if isinstance(data.get("output_text"), str) and data["output_text"].strip():
         return data["output_text"].strip()
     outputs = data.get("output") or []
@@ -168,8 +185,8 @@ def _post_with_backoff(payload: Dict[str, Any]) -> Dict[str, Any]:
     raise RuntimeError("OpenAI request failed after retries")
 
 
-def _call_responses_api(user_content: str) -> str:
-    payload = {
+def build_responses_payload(user_content: str) -> Dict[str, Any]:
+    return {
         "model": OPENAI_MODEL,
         "input": [
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -185,8 +202,12 @@ def _call_responses_api(user_content: str) -> str:
             }
         },
     }
+
+
+def _call_responses_api(user_content: str) -> str:
+    payload = build_responses_payload(user_content)
     data = _post_with_backoff(payload)
-    return _extract_output_text(data)
+    return extract_output_text(data)
 
 
 def _validate_payload(obj: Any) -> Optional[Dict[str, Any]]:
@@ -246,42 +267,39 @@ def _validate_payload(obj: Any) -> Optional[Dict[str, Any]]:
     }
 
 
+def parse_summary_output(raw_output: str) -> Optional[Dict[str, Any]]:
+    if not raw_output or not str(raw_output).strip():
+        return None
+    try:
+        parsed = json.loads(raw_output)
+    except json.JSONDecodeError:
+        return None
+    return _validate_payload(parsed)
+
+
+def repair_summary_output(raw_output: str, text: str, metadata: Dict[str, str]) -> Optional[Dict[str, Any]]:
+    fix_prompt = build_fix_prompt(raw_output)
+    retry_user = f"{fix_prompt}\n\n{build_user_content(text, metadata)}"
+    raw_retry = _call_responses_api(retry_user)
+    return parse_summary_output(raw_retry)
+
+
 def summarize_row(text: str, metadata: Dict[str, str]) -> Optional[Dict[str, Any]]:
     if not AI_ENABLED:
         return None
 
     cleaned = normalize_ws(text or "")
-    if (metadata or {}).get("role") == "chair" and len(cleaned) < 180:
-        return _short_summary_from_text(cleaned)
-    if len(cleaned) < MIN_TEXT_CHARS:
-        return _short_summary_from_text(cleaned)
+    short_circuit = short_circuit_summary(cleaned, metadata or {})
+    if short_circuit:
+        return short_circuit
 
-    user_content = _build_user_content(cleaned, metadata or {})
+    user_content = build_user_content(cleaned, metadata or {})
     raw = _call_responses_api(user_content)
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        parsed = None
-
-    validated = _validate_payload(parsed)
+    validated = parse_summary_output(raw)
     if validated:
         return validated
 
-    # Retry once with a fix-to-schema prompt
-    fix_prompt = (
-        "Fix to schema. Output valid JSON only matching the provided schema.\n\n"
-        f"Schema:\n{json.dumps(JSON_SCHEMA, ensure_ascii=True)}\n\n"
-        f"Invalid output:\n{raw}\n"
-    )
-    retry_content = _build_user_content(cleaned, metadata or {})
-    retry_user = f"{fix_prompt}\n\n{retry_content}"
-    raw_retry = _call_responses_api(retry_user)
-    try:
-        parsed_retry = json.loads(raw_retry)
-    except json.JSONDecodeError:
-        return None
-
-    return _validate_payload(parsed_retry)
+    return repair_summary_output(raw, cleaned, metadata or {})
 
 
 def build_summary_update(payload: Dict[str, Any]) -> Dict[str, Any]:
