@@ -3,3 +3,9 @@
 __pycache__/
 *.pyc
 .env
+
+# Codex chat/context scratch files
+chat-handoff.md
+context.md
+**/chat-handoff.md
+**/context.md
