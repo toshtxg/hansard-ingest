@@ -171,7 +171,17 @@ def _post_with_backoff(payload: Dict[str, Any]) -> Dict[str, Any]:
             time.sleep(0.5 * (2 ** attempt) + random.random() * 0.2)
             continue
 
-        if r.status_code in {429, 500, 502, 503, 504}:
+        if r.status_code == 429:
+            body = r.json() if r.content else {}
+            msg = (body.get("error") or {}).get("message", "")
+            if "requests per day" in msg or "RPD" in msg:
+                raise RuntimeError(f"DAILY_LIMIT_REACHED: {msg}")
+            if attempt == max_attempts - 1:
+                raise RuntimeError(f"OpenAI API error 429: {r.text}")
+            time.sleep(0.5 * (2 ** attempt) + random.random() * 0.2)
+            continue
+
+        if r.status_code in {500, 502, 503, 504}:
             if attempt == max_attempts - 1:
                 raise RuntimeError(f"OpenAI API error {r.status_code}: {r.text}")
             time.sleep(0.5 * (2 ** attempt) + random.random() * 0.2)

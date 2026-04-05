@@ -1,5 +1,7 @@
 import argparse
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 from hansard_ingest.ai_speech_summary import (
@@ -18,6 +20,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--end_date", required=True, help="YYYY-MM-DD")
     p.add_argument("--limit", type=int, default=500, help="Max rows to process (default: 500)")
     p.add_argument("--batch_size", type=int, default=50, help="Fetch batch size (default: 50)")
+    p.add_argument("--workers", type=int, default=1, help="Concurrent API workers (default: 1, try 8-10 for Tier 1)")
     p.add_argument("--progress_every", type=int, default=1, help="Update progress every N rows (default: 1)")
     return p.parse_args()
 
@@ -30,12 +33,46 @@ def _validate_date(s: str) -> str:
     return s
 
 
-def _print_progress(processed: int, succeeded: int, failed: int, skipped: int, inline: bool = True) -> None:
-    msg = f"Progress: processed={processed} succeeded={succeeded} failed={failed} skipped={skipped}"
-    if inline:
-        print(f"\r{msg}", end="", flush=True)
-    else:
-        print(msg)
+def _print_progress(processed: int, succeeded: int, failed: int, skipped: int) -> None:
+    print(f"\rProgress: processed={processed} succeeded={succeeded} failed={failed} skipped={skipped}", end="", flush=True)
+
+
+def _process_row(row: dict, sb) -> str:
+    """Returns 'succeeded', 'skipped', or 'failed'."""
+    if not needs_summary(row.get("one_liner"), row.get("summary_version")):
+        return "skipped"
+    if not row.get("sitting_date") or row.get("row_num") is None:
+        return "skipped"
+
+    speech = str(row.get("speech_details") or "")
+    speaker_label = row.get("mp_name_raw") or ""
+    metadata = {
+        "speaker_name": speaker_label,
+        "role": infer_role_from_label(speaker_label),
+        "sitting_date": row.get("sitting_date") or "",
+    }
+
+    try:
+        summary = summarize_row(speech, metadata)
+        if not summary:
+            return "skipped"
+        update = build_summary_update(summary)
+        (
+            sb.table("hansard_speeches")
+            .update(update)
+            .eq("sitting_date", row["sitting_date"])
+            .eq("row_num", row["row_num"])
+            .execute()
+        )
+        return "succeeded"
+    except RuntimeError as e:
+        if "DAILY_LIMIT_REACHED" in str(e):
+            raise  # propagate so the executor can catch and exit cleanly
+        print(f"\nSummary failed for {row.get('sitting_date')} row {row.get('row_num')}: {e}")
+        return "failed"
+    except Exception as e:
+        print(f"\nSummary failed for {row.get('sitting_date')} row {row.get('row_num')}: {e}")
+        return "failed"
 
 
 def main() -> None:
@@ -44,6 +81,7 @@ def main() -> None:
     end_date = _validate_date(args.end_date)
     limit = args.limit if args.limit > 0 else 0
     batch_size = max(1, args.batch_size)
+    workers = max(1, args.workers)
     progress_every = max(1, args.progress_every)
 
     if SKIP_DB:
@@ -59,10 +97,11 @@ def main() -> None:
     failed = 0
     skipped = 0
     offset = 0
+    lock = threading.Lock()
 
     print(
         f"Backfill speech summaries: {start_date} -> {end_date} "
-        f"(limit={limit or 'all'}, batch_size={batch_size}, ver={SCRIPT_VERSION})"
+        f"(limit={limit or 'all'}, batch_size={batch_size}, workers={workers}, ver={SCRIPT_VERSION})"
     )
 
     while True:
@@ -90,53 +129,34 @@ def main() -> None:
         if not rows:
             break
 
-        for row in rows:
-            if limit and processed >= limit:
-                break
-            processed += 1
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {executor.submit(_process_row, row, sb): row for row in rows}
+            for future in as_completed(futures):
+                try:
+                    result = future.result()
+                except RuntimeError as e:
+                    if "DAILY_LIMIT_REACHED" in str(e):
+                        print(f"\n\nDaily API limit reached. Resume tomorrow with:\n"
+                              f"  --start_date {start_date} --end_date {end_date} (script skips already-summarised rows)\n")
+                        sys.exit(0)
+                    result = "failed"
+                    print(f"\nUnexpected error: {e}")
+                with lock:
+                    processed += 1
+                    if result == "succeeded":
+                        succeeded += 1
+                    elif result == "failed":
+                        failed += 1
+                    else:
+                        skipped += 1
+                    if processed % progress_every == 0:
+                        _print_progress(processed, succeeded, failed, skipped)
 
-            if not needs_summary(row.get("one_liner"), row.get("summary_version")):
-                skipped += 1
-                if processed % progress_every == 0:
-                    _print_progress(processed, succeeded, failed, skipped, inline=True)
-                continue
-            if not row.get("sitting_date") or row.get("row_num") is None:
-                skipped += 1
-                if processed % progress_every == 0:
-                    _print_progress(processed, succeeded, failed, skipped, inline=True)
-                continue
-
-            speech = str(row.get("speech_details") or "")
-            speaker_label = row.get("mp_name_raw") or ""
-            metadata = {
-                "speaker_name": speaker_label,
-                "role": infer_role_from_label(speaker_label),
-                "sitting_date": row.get("sitting_date") or "",
-            }
-
-            try:
-                summary = summarize_row(speech, metadata)
-                if not summary:
-                    skipped += 1
-                    continue
-                update = build_summary_update(summary)
-                (
-                    sb.table("hansard_speeches")
-                    .update(update)
-                    .eq("sitting_date", row["sitting_date"])
-                    .eq("row_num", row["row_num"])
-                    .execute()
-                )
-                succeeded += 1
-            except Exception as e:
-                failed += 1
-                print(f"\nSummary failed for {row.get('sitting_date')} row {row.get('row_num')}: {e}")
-            finally:
-                if processed % progress_every == 0:
-                    _print_progress(processed, succeeded, failed, skipped, inline=True)
+                if limit and processed >= limit:
+                    break
 
         offset += to_fetch
-        _print_progress(processed, succeeded, failed, skipped, inline=True)
+        _print_progress(processed, succeeded, failed, skipped)
 
     attempted = succeeded + failed
     if attempted > 0 and (failed / attempted) > 0.3:
