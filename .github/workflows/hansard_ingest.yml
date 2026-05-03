@@ -7,7 +7,7 @@ on:
   workflow_dispatch: {}
 
 concurrency:
-  group: hansard-ingest
+  group: sg-hansard
   cancel-in-progress: false
 
 jobs:

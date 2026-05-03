@@ -4,8 +4,8 @@
 **Author:** Tosh Goh  
 **Date:** March 2026  
 **Status:** Spec for Claude Code implementation  
-**Repo:** github.com/toshtxg/hansard-ingest  
-**Live:** toshtxg.github.io/hansard-ingest  
+**Repo:** github.com/toshtxg/sg-hansard  
+**Live:** toshtxg.github.io/sg-hansard  
 
 ---
 
