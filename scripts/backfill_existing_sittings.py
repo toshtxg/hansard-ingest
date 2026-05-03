@@ -1,3 +1,11 @@
+"""Re-ingest every sitting date already in ``hansard_sittings``.
+
+Use after schema or parser changes to refresh attendance / PTBA / speech
+rows (and optionally sitting-level AI summaries) without redefining the
+date window. Reads dates from Supabase rather than the API, so it only
+touches sittings the system already knows about.
+"""
+
 from datetime import datetime
 
 from hansard_ingest.ai_summary import generate_ai_summary

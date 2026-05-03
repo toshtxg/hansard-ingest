@@ -1,3 +1,15 @@
+"""Backfill per-speech AI summaries over a date range.
+
+Usage:
+    python scripts/backfill_summaries.py \
+        --start_date YYYY-MM-DD --end_date YYYY-MM-DD \
+        [--limit N] [--batch_size N] [--workers N]
+
+Skips rows that already have an up-to-date ``one_liner`` for the current
+``SUMMARY_VERSION``. Exits 0 cleanly when OpenAI's daily quota is hit so
+the run is resumable, and exits non-zero if the failure rate exceeds 30%.
+"""
+
 import argparse
 import sys
 import threading
