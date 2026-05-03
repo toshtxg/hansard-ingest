@@ -1,14 +1,18 @@
+"""Environment-driven configuration for the ingestion pipeline.
+
+All knobs are read from environment variables (loaded from ``.env`` if
+present). See ``README.md`` for the full list of supported variables and
+their defaults.
+"""
+
 import os
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# ---------------------------
-# Version stamp so you can confirm you are running the file you just edited.
-# Bump this when you make changes.
+# Bump when changing behaviour so logs make it clear which version ran.
 SCRIPT_VERSION = "2026-01-20.5"
 
-# --------- CONFIG ----------
 BASE_URL = "https://sprs.parl.gov.sg/search/getHansardReport/"
 
 

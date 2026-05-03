@@ -1,3 +1,15 @@
+"""Per-speech structured AI summary (segment_type / one_liner / themes / claims).
+
+Calls OpenAI's Responses API with a strict JSON schema and writes the
+result back onto the row in ``hansard_speeches``. Short or procedural
+rows skip the API and use a local short-circuit summary. Includes
+exponential backoff on 429/5xx; a daily-quota 429 raises
+``DAILY_LIMIT_REACHED`` so the backfill script can exit cleanly and
+resume the next day.
+
+For sitting-level summaries, see :mod:`hansard_ingest.ai_summary`.
+"""
+
 import json
 import random
 import time

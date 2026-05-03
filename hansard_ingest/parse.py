@@ -1,3 +1,16 @@
+"""Parse one Hansard JSON payload into tabular DataFrames.
+
+A sitting payload contains attendance, PTBA (Permission To Be Absent)
+windows, and HTML-formatted speech sections. This module turns that into
+three DataFrames keyed for upsert: attendance, PTBA, and speeches.
+
+Speech parsing is the gnarly part: speaker labels can be split across
+``<strong>`` tags, the Chair changes mid-sitting (tracked via
+``[X in the Chair.]`` markers), and Question Time listings look like
+speeches but aren't. Helpers in :mod:`hansard_ingest.names` handle name
+cleaning and fuzzy-matching against the attendance list.
+"""
+
 import re
 from datetime import date
 from typing import Dict, List, Optional, Tuple

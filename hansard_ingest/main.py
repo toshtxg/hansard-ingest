@@ -1,3 +1,11 @@
+"""Pipeline orchestration: walk a date range and ingest each sitting.
+
+Resolves the date window from environment config (or Supabase state),
+then for each day: fetch -> parse -> (optional AI summary) -> upsert.
+Failures on a single day are logged and skipped so one bad day cannot
+abort a long backfill window.
+"""
+
 from datetime import date, datetime, timedelta
 
 from .ai_summary import generate_ai_summary

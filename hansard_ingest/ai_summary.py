@@ -1,3 +1,13 @@
+"""Sitting-level 3-sentence AI summary (one row per sitting).
+
+Builds a deterministic prompt from the parsed speeches DataFrame and
+calls OpenAI's Chat Completions API. The result is upserted into
+``hansard_ai_summaries`` (PK: ``sitting_date``). Fully optional —
+controlled by ``AI_ENABLED`` and ``AI_DRY_RUN``.
+
+For per-speech summaries, see :mod:`hansard_ingest.ai_speech_summary`.
+"""
+
 from datetime import datetime
 from typing import Optional
 

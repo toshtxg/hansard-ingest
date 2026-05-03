@@ -1,3 +1,5 @@
+"""Small helpers: whitespace, date parsing, JSON-safe records, debug I/O."""
+
 import csv
 import json
 import math

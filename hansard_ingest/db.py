@@ -1,3 +1,12 @@
+"""Supabase client + idempotent upserts for the parsed tables.
+
+Each table has an explicit primary key and ``on_conflict`` target so
+re-running the pipeline for the same date is a no-op. We normalise PK
+columns and drop in-payload duplicates before upserting to avoid the
+``ON CONFLICT DO UPDATE command cannot affect row a second time``
+Postgres error that fires when one statement carries duplicate keys.
+"""
+
 from datetime import date, datetime
 from typing import Optional
 

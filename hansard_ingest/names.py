@@ -1,3 +1,13 @@
+"""Name cleaning, Chair role inference, and fuzzy matching.
+
+The Hansard payload mixes raw labels ("Mr Speaker", "The Minister for
+Foreign Affairs (Dr Vivian Balakrishnan)", "Mr Chan Chun Sing (Tanjong
+Pagar), Coordinating Minister...") with attendance entries. This module
+normalises those into clean person names and matches speaker labels back
+to the attendance list using ``difflib`` (kept deterministic — no LLM,
+no network).
+"""
+
 import re
 from typing import List, Optional, Tuple
 
