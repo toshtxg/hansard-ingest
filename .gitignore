@@ -9,3 +9,16 @@ chat-handoff.md
 context.md
 **/chat-handoff.md
 **/context.md
+
+# Bootstrap/PRD docs kept locally for personal reference, not in the repo
+CLAUDE_CODE_INSTRUCTIONS.md
+hansard-dashboard-prd.md
+
+# Untracked dashboard frontend (separate Vercel project)
+hansard-dashboard/
+
+# Local debug artefacts when DEBUG=true
+hansard_*.json
+attendance_list_*.csv
+ptba_list_*.csv
+speech_list_*.csv
